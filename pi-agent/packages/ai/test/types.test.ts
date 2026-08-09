@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AgentMessage, ToolResultMessage, UserMessage } from "./protocol";
+import type { AgentMessage, ToolResultMessage, UserMessage } from "pi-ai";
 
 describe("protocol message shapes", () => {
   it("models a user message with text content", () => {
@@ -18,6 +18,7 @@ describe("protocol message shapes", () => {
       toolCallId: "call_1",
       toolName: "read_file",
       content: [{ type: "text", text: "ok" }],
+      isError: false,
       timestamp: 1_700_000_000_001
     };
     expect(msg.toolName).toBe("read_file");
@@ -31,6 +32,7 @@ describe("protocol message shapes", () => {
         toolCallId: "c",
         toolName: "t",
         content: [{ type: "text", text: "ok" }],
+        isError: false,
         timestamp: 0
       }
     ];
