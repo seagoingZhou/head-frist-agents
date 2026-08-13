@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AgentMessage, ToolResultMessage, UserMessage } from "pi-ai";
+import type { Message, ToolResultMessage, UserMessage } from "pi-ai";
 
 describe("protocol message shapes", () => {
   it("models a user message with text content", () => {
@@ -24,8 +24,8 @@ describe("protocol message shapes", () => {
     expect(msg.toolName).toBe("read_file");
   });
 
-  it("treats both shapes as AgentMessage", () => {
-    const messages: AgentMessage[] = [
+  it("treats both shapes as Message", () => {
+    const messages: Message[] = [
       { role: "user", content: [{ type: "text", text: "hi" }], timestamp: 0 },
       {
         role: "toolResult",
