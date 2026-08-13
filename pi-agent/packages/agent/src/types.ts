@@ -9,7 +9,8 @@ import type {
     AssistantMessage,
     AssistantMessageEventStream,
     AssistantMessageEvent,
-    SimpleStreamOptions
+    SimpleStreamOptions,
+    TextContent
 
 } from "pi-ai";
 import { streamSimple } from "../../ai/src/stream";
@@ -32,12 +33,19 @@ export interface CustomAgentMessages {
  */
 export type AgentMessage = Message | CustomAgentMessages[keyof CustomAgentMessages];
 
+export interface AgentToolResult {
+    content : (TextContent)[];
+    details: any
+}
+
 export interface AgentTool extends Tool {
     label : string;
     execute : (
-        tool
-    )
-}
+        toolCallId : string,
+        params : Record<string, unknown>,
+        signal ?: AbortSignal,
+    ) => Promise<AgentToolResult>;
+} 
 
 /** Context snapshot passed into the low-level agent loop. */
 export interface AgentContext {

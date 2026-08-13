@@ -53,6 +53,12 @@ export function streamSimple<TApi extends Api>(
     context: Context,
     options?: SimpleStreamOptions
 ): AssistantMessageEventStream {
+    const apiKey = options?.apikey || getEnvApiKey(Model.provider);
+    if (!apiKey) {
+        throw new Error(`No API key for provider: ${Model.provider}`);
+    }
+    const providerOptions = { ...options, apikey: apiKey };
+    return stream(Model, context, providerOptions as OptionsForApi<TApi>);
 
 }
 
@@ -61,7 +67,7 @@ export function stream<TApi extends Api>(
 	context: Context,
 	options?: OptionsForApi<TApi>,
 ): AssistantMessageEventStream {
-	const apiKey = options?.apiKey || getEnvApiKey(model.provider);
+	const apiKey = options?.apikey || getEnvApiKey(model.provider);
 	if (!apiKey) {
 		throw new Error(`No API key for provider: ${model.provider}`);
 	}

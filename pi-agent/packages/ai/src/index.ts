@@ -3,3 +3,4 @@
 export * from "./types.ts";
 export * from "./message.ts";
 export * from "./utils/event-stream.ts";
+export * from "./stream.ts"

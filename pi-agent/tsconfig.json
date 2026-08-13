@@ -2,16 +2,12 @@
   "compilerOptions": {
     "target": "ES2022",
     "module": "ESNext",
-    "moduleResolution": "bundler",
-    "lib": ["ES2022", "DOM"],
+    "moduleResolution": "Bundler",
     "jsx": "react-jsx",
     "strict": true,
-    "noEmit": true,
-    "skipLibCheck": true,
     "esModuleInterop": true,
-    "allowImportingTsExtensions": true,
-    "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true
+    "skipLibCheck": true,
+    "noEmit": true
   },
-  "include": ["packages/**/*.ts", "*.ts"]
+  "include": ["pi-agent/packages", "vite.config.ts"]
 }

@@ -29,11 +29,32 @@ export class EventStream<T, R = T> implements AsyncIterable<T>{
         // }
     }
 
+	push(event: T): void {
+		// 
+	}
+
+	end(result?: R): void {
+		
+	}
+
     result(): Promise<R> {
 		return this.finalResultPromise;
 	}
 }
 
 export class AssistantMessageEventStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
+	constructor() {
+		super(
+			(event) => event.type === "done" || event.type === "error",
+			(event) => {
+				if (event.type === "done") {
+					return event.message;
+				} else if (event.type === "error") {
+					return event.error;
+				}
+				throw new Error("Unexpected event type for final result");
+			},
+		);
+	}
 	
 }
