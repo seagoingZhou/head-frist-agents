@@ -22,18 +22,65 @@ export class EventStream<T, R = T> implements AsyncIterable<T>{
     async *[Symbol.asyncIterator](): AsyncIterator<T> {
 
         // 实现异步迭代器逻辑
-        // 这里可以根据具体需求进行实现，例如从某个数据源中获取数据并 yield 出去
-        // 下面是一个简单的示例，假设我们有一个异步生成器函数 generateData() 来生成数据
-        // for await (const item of this.generateData()) {
-        //     yield item;
-        // }
+        // 从数据源中获取数据并 yield 出去
+        while (true) {
+			if (this.queue.length > 0) {
+				yield this.queue.shift()!;
+			} else if (this.done) {
+				return;
+			} else {
+				// 队列空且未结束 → 挂起一个等待者，由 push/end 唤醒并直接传入结果
+				const result = await new Promise<IteratorResult<T>> (
+					(resolve) => 
+						this.waiting.push(resolve)
+				);
+				if (result.done) {
+					return;
+				}
+				yield result.value;
+			}
+		}
     }
 
 	push(event: T): void {
-		// 
+		if (this.done) {
+			return;
+		}
+		if (this.isComplete(event)) {
+			this.done = true;
+			this.resolveFinalResult(
+				this.extractResult(event)
+			);
+		}
+
+		const waiter = this.waiting.shift();
+		if (waiter) {
+			waiter(
+				{
+					value : event,
+					done : false
+				}
+			);
+		} else {
+			this.queue.push(event);
+		}
 	}
 
 	end(result?: R): void {
+		this.done = true;
+		if (result !== undefined) {
+			this.resolveFinalResult(result)
+		}
+
+		while (this.waiting.length > 0) {
+			const waiter = this.waiting.shift()!;
+			waiter(
+				{
+					value : undefined as any,
+					done : true
+				}
+			);
+		}
 		
 	}
 

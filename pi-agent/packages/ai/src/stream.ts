@@ -9,7 +9,13 @@ import type {
     KnownProvider,
     OptionsForApi
 } from "./types.ts";
-import { type OpenAICompletionsOptions, streamOpenAICompletions } from "./providers/openai-completions.js";
+import { 
+    type OpenAICompletionsOptions, 
+    streamOpenAICompletions 
+} from "./providers/openai-completions.ts";
+import {
+    streamMock 
+    } from "./providers/mock.ts";
 
 
 /**
@@ -20,6 +26,12 @@ import { type OpenAICompletionsOptions, streamOpenAICompletions } from "./provid
 export function getEnvApiKey(provider: KnownProvider): string | undefined;
 export function getEnvApiKey(provider: string): string | undefined;
 export function getEnvApiKey(provider: any): string | undefined {
+
+    // mock provider 不需要真实 key，但要让下游通用的 key 检查通过
+	if (provider === "mock") {
+		return "mock-key";
+	}
+    
 	// Fall back to environment variables
 	if (provider === "github-copilot") {
 		return process.env.COPILOT_GITHUB_TOKEN || process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
@@ -81,6 +93,7 @@ export function stream<TApi extends Api>(
 		case "openai-completions":
 			return streamOpenAICompletions(model as Model<"openai-completions">, context, providerOptions as any);
 
+
 		// case "openai-responses":
 		// 	return streamOpenAIResponses(model as Model<"openai-responses">, context, providerOptions as any);
 
@@ -93,6 +106,9 @@ export function stream<TApi extends Api>(
 		// 		context,
 		// 		providerOptions as GoogleGeminiCliOptions,
 		// 	);
+
+        case "mock":
+            return streamMock(model as Model<"mock">, context, providerOptions as OptionsForApi<"mock">);
 
 		default: {
 			// This should never be reached if all Api cases are handled

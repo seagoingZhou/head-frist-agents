@@ -5,11 +5,13 @@ import { AssistantMessageEventStream } from "./utils/event-stream";
 
 export type Api =
 	| "openai-completions"
+	| "mock"
 	;
 
 
 export interface ApiOptionsMap {
 	"openai-completions": OpenAICompletionsOptions;
+	"mock": StreamOptions;
 }
 
 

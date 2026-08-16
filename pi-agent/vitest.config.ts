@@ -4,6 +4,7 @@ import base from "./vitest.base.ts";
 
 export default mergeConfig(base, defineConfig({
   test: {
-    environment: "node"
+    environment: "node",
+    reporter: "verbose"
   }
 }));
