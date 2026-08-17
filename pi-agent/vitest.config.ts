@@ -1,10 +1,10 @@
-import { mergeConfig } from "vite";
 import { defineConfig } from "vitest/config";
 import base from "./vitest.base.ts";
 
-export default mergeConfig(base, defineConfig({
+export default defineConfig({
+  ...base,
   test: {
     environment: "node",
-    reporter: "verbose"
+    reporters: ["verbose"]
   }
-}));
+});
