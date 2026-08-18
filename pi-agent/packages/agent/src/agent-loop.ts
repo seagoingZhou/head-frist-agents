@@ -236,9 +236,70 @@ async function streamAssistantResponse(
          llmContext
     );
 
-    const finalMessage = await response.result();
+    let partialMessage : AssistantMessage | null = null;
+    let addedPartial = false;
 
+    for await (const event of response) {
+        switch (event.type) {
+            case "start":
+                partialMessage = event.partial;
+                context.messages.push(partialMessage);
+                addedPartial = true;
+                stream.push(
+                    {
+                        type : "message_start",
+                        message : {...partialMessage}
+                    }
+                );
+                break;
+            case "text_start":
+            case "text_delta":
+            case "text_end":
+            case "thinking_start":
+            case "thinking_delta":
+            case "thinking_end":
+            case "toolcall_start":
+            case "toolcall_delta":
+                if (partialMessage) {
+                    partialMessage = event.partial;
+                    context.messages[context.messages.length - 1] = partialMessage;
+                    stream.push(
+                        {
+                            type : "message_update",
+                            assistantMessageEvent : event,
+                            message : {...partialMessage},
+                        }
+                    );
+                }
+                break;
+            case "done":
+            case "error": {
+                const finalMessage = await response.result();
+                if (addedPartial) {
+                    context.messages[context.messages.length - 1] = finalMessage;
+                } else {
+                    context.messages.push(finalMessage);
+                }
 
-    return finalMessage;
+                if (!addedPartial) {
+                    stream.push(
+                        {
+                            type : "message_start",
+                            message : {...finalMessage},
+                        }
+                    );
+                }
+                stream.push(
+                    {
+                        type : "message_end",
+                        message : finalMessage,
+                    }
+                )
+                return finalMessage;
+            }
+        }
+    }
+
+    return await response.result();
 
 }

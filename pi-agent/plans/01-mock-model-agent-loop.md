@@ -6,10 +6,9 @@
 
 ---
 
-## 当前进度（2026-08-16）
+## 当前进度（2026-08-18）
 
-- ✅ **已完成**：Step 0-7 + 第一批集成测试（文本回复的 mock 端到端链路，typecheck exit 0、5/5 测试通过）
-- ⏳ **待完成**：**Step 8 —— assistant 流式事件转发**（见「三、实施步骤」末尾）
+- ✅ **已完成**：Step 0-8 + 第一批集成测试（文本回复的 mock 端到端链路 + assistant 流式事件转发，typecheck exit 0、8/8 测试通过）
 - ⏳ 待完成：工具闭环（关键词→toolCall、`executeToolCalls`、`AgentTool`）
 
 ---
@@ -45,7 +44,7 @@ agentLoop(prompts, context, config, signal?, streamFn?)
 
 ## 三、实施步骤
 
-> ✅ Step 0-7 均已实施并通过验证；**Step 8（待完成）** 在末尾新增。
+> ✅ Step 0-8 均已实施并通过验证（Step 8 由本人实现：`streamAssistantResponse` 改为 `for await` 转发流式事件）。
 
 ### Step 0：基线检查
 
@@ -351,7 +350,9 @@ npm test            # 全部通过
 
 ---
 
-### Step 8（待完成）：转发 assistant 流式事件（message_update）
+### Step 8（✅ 已完成）：转发 assistant 流式事件（message_update）
+
+> 已于 2026-08-18 实现并通过验证：`npm run typecheck` exit 0、`npm test` 8/8 通过。实现与下方改法一致，验证输出见本节末尾。
 
 **目标**：让 agent 事件流能看到 assistant 的**产生过程**——`message_start` → `message_update`（每次增量）→ `message_end`，而不仅是最终结果。当前集成测试只看到 `message_start/end(user)`，assistant 是「凭空出现」的。
 
@@ -419,18 +420,21 @@ return await response.result();
 - 事件类型来自 `types.ts` 的 `AssistantMessageEvent`（`start` / `text_*` / `thinking_*` / `toolcall_*` / `done` / `error`）。**没有 `toolcall_end`**（生产有，我们的类型还没加）——switch 里别写这个 case。
 - `message_update` 要求 `assistantMessageEvent: event`（原始流事件）+ `message: { ...partialMessage }`（快照拷贝，避免共享同一对象引用）。
 - `context.messages` 就地更新（最后一条替换成 partial）；`runLoop` 仍用返回的 `finalMessage` push 到 `newMessages`，对外行为不变。
-- `event.partial` 始终是**截至当前的完整 assistant 消息**，所以每次 delta 都整份转发（mock 现在只发一次 delta，会看到 1 次 `message_update`）。
+- `event.partial` 始终是**截至当前的完整 assistant 消息**，所以每次 delta 都整份转发。
+- 注意：mock 发出 `text_start → text_delta → text_end` 三个独立事件，每个各触发一次转发，所以实际会看到 **3 次 `message_update`**（早期预期轨迹把这里略写成了 1 次，是文档笔误，实现行为正确）。
 
-**验证**：`npm run typecheck` + `npm test`。集成测试输出应从：
+**验证（✅ 已通过）**：`npm run typecheck` exit 0 + `npm test` 8/8。集成测试输出从：
 ```
   [event] message_end(user)
   [event] turn_end(toolResults=0)     ← assistant 凭空出现
 ```
-变为：
+变为（assistant 不再凭空出现）：
 ```
   [event] message_end(user)
   [event] message_start(assistant)    ← 新增
-  [event] message_update(assistant)   ← 新增
+  [event] message_update(assistant)   ← 新增 ×1（text_start）
+  [event] message_update(assistant)   ← 新增 ×2（text_delta）
+  [event] message_update(assistant)   ← 新增 ×3（text_end）
   [event] message_end(assistant)      ← 新增
   [event] turn_end(toolResults=0)
 ```
