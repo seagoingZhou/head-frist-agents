@@ -2,10 +2,7 @@ import { access as fsAccess, readFile as fsReadFile } from "node:fs/promises";
 import { join } from "node:path";
 import { text } from "pi-ai";
 import type { AgentTool } from "pi-agent-core";
-
-
-/** 默认以 pi-agent/workspace 为工作区根 */
-const WORKSPACE_ROOT = join(import.meta.dirname, "../../../../workspace");
+import { WORKSPACE_ROOT } from "../utils/paths.ts";
 
 export interface ReadOperations {
     readFile: (path: string) => Promise<string>;

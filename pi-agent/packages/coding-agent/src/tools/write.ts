@@ -1,9 +1,8 @@
 import { mkdir as fsMkdir, writeFile as fsWriteFile } from "node:fs/promises";
-import { dirname, join, isAbsolute, relative, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { text } from "pi-ai";
 import type { AgentTool } from "pi-agent-core";
-
-const WORKSPACE_ROOT = join(import.meta.dirname, "../../../../workspace");
+import { WORKSPACE_ROOT } from "../utils/paths.ts";
 
 export interface WriteOperations {
     writeFile: (path: string, content: string) => Promise<void>;

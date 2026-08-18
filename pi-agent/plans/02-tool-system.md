@@ -5,10 +5,10 @@
 > 教学版**分两阶段**：**阶段一**（Read/Write/Edit/Ls + 基础执行）、**阶段二**（五步管道）。
 > 前置：mock model + 文本版 agent loop 已就绪（见 `01-mock-model-agent-loop.md`）。
 
-## 当前进度（2026-08-16）
+## 当前进度（2026-08-19）
 
-- ✅ 前置：mock + 文本版 agent loop（`01-mock-model-agent-loop.md` 的 Step 0-7）
-- ⏳ 待完成：工具系统——阶段一（工具 + 基础执行）、阶段二（五步管道）
+- ✅ 前置：mock + 文本版 agent loop + 工具系统**阶段一工具本体**全部就绪：`read_file` / `write_note` / `list_files` / `edit_file` 已实现；`bash` / `find` / `grep` 为接口桩；`operations.ts` 已删（各工具自包含接口）；mock 关键词 → toolCall 规则已落地（Step 1.2）
+- ⏳ 待完成：Step 1.3 `executeToolCalls`（agent-loop 当前还是空 stub）、Step 1.4 集成测试、阶段二五步管道
 
 ---
 
@@ -144,66 +144,322 @@ const defaultReadOperations: ReadOperations = {
 
 > **目标**：4 个工具能真实读写 `workspace/`，跑通**简单工具闭环**（仅 find→execute，不引入完整管道）。**验收 = 集成测试用例 1**。
 
-#### Step 1.1：Operations 接口 + 四个真实工具（`packages/agent/src/tools/`）
+#### Step 1.1：四个真实工具 + 桩工具（`packages/coding-agent/src/tools/`）
 
-新建 `packages/agent/src/tools/operations.ts`：
+> 结构调整（2026-08-19）：原方案打算集中到 `packages/agent/src/tools/operations.ts` 定义接口，实际落地改为**每个工具文件自包含**——接口 + 默认实现 + 工厂 + 单例都放在同一 `.ts`，并**删掉了 `operations.ts`**；`bash.ts` / `find.ts` / `grep.ts` 为纯接口桩（暂无工具对象）。
+
+目录结构（现状）：
+
+```
+packages/coding-agent/src/
+  utils/paths.ts        // WORKSPACE_ROOT 唯一出口
+  tools/path-utils.ts   // pathExists 帮助函数
+  tools/read.ts         // read_file     → Step 1.1a
+  tools/write.ts        // write_note    → Step 1.1b（逃逸守卫 + 自动建父目录）
+  tools/ls.ts           // list_files    → Step 1.1c
+  tools/edit.ts         // edit_file     → Step 1.1d
+  tools/bash.ts         // 桩：仅 BashOperations 接口
+  tools/find.ts         // 桩：仅 FindOperations 接口
+  tools/grep.ts         // 桩：仅 GrepOperations 接口
+  index.ts              // export * 全部 7 个工具模块
+```
+
+> **四工具的通用模式**（每个文件自包含同构）：
+> - Operations 接口 + 默认实现 + 工厂 `createXxxTool(workspaceRoot, ops)` + 单例 `xxxTool`——测试可注入临时目录 / 委托远程 fs；
+> - 工作区根统一来自 `utils/paths.ts` 的 `WORKSPACE_ROOT`；`pathExists` 在 `tools/path-utils.ts`；
+> - 工具名（`read_file` / `write_note` / `list_files` / `edit_file`）**必须与 mock 的 toolCall.name 一致**（非生产版 `read` / `write` / `ls` / `edit`）；
+> - `bash.ts` / `find.ts` / `grep.ts` 仅为接口桩（无工具对象）。
+>
+> 四工具各自实现（代码 + 要点 + 验证）见 Step 1.1a–1.1d。
+
+**验证**：`npm run typecheck` → exit 0。
+
+#### Step 1.1a：read.ts —— read_file 工具（✅ 已实现）
+
+**文件**：`packages/coding-agent/src/tools/read.ts`
+
+只读工具模板：access 存在性检查 + `details` 附加文件总行数。
 
 ```ts
-// 与生产对齐的接口（教学版只留核心方法；Grep/Find/Bash 为桩）
+import { access as fsAccess, readFile as fsReadFile } from "node:fs/promises";
+import { join } from "node:path";
+import { text } from "pi-ai";
+import type { AgentTool } from "pi-agent-core";
+import { WORKSPACE_ROOT } from "../utils/paths.ts";
+
 export interface ReadOperations {
     readFile: (path: string) => Promise<string>;
     access: (path: string) => Promise<void>;
 }
+const defaultReadOperations: ReadOperations = {
+  readFile: (path) => fsReadFile(path, "utf-8"),
+  access: (path) => fsAccess(path),
+};
+
+/** details 里携带的信息（仿生产 read.ts:275：附加文件总行数） */
+export interface ReadToolDetails { totalFileLines: number; }
+
+export function createReadTool(
+  workspaceRoot: string = WORKSPACE_ROOT,
+  ops: ReadOperations = defaultReadOperations,
+): AgentTool {
+  return {
+    name: "read_file",
+    label: "读取文件",
+    description: "读取工作区文件内容。",
+    parameters: { type: "object", properties: { path: { type: "string" } } },
+    execute: async (_toolCallId, params) => {
+      const path = params.path as string;
+      const absolute = join(workspaceRoot, path);
+      await ops.access(absolute);                 // 存在性检查
+      const content = await ops.readFile(absolute);
+      return {
+        content: [text(content)],
+        details: { totalFileLines: content.split("\n").length } satisfies ReadToolDetails,
+      };
+    },
+  };
+}
+
+export const readTool: AgentTool = createReadTool();
+```
+
+**实现要点**：
+- `ops.access` 失败即 throw → loop catch 成 isError（失败即抛约定）。
+- `details.totalFileLines` 仿生产 read.ts:275——LLM 可据此判断是否要分页/继续读。
+
+**验证**：`npm run typecheck` → exit 0。
+
+#### Step 1.1b：write.ts —— write_note 工具（✅ 已实现）
+
+**文件**：`packages/coding-agent/src/tools/write.ts`
+
+写类工具模板：含 **逃逸守卫** + **自动建父目录**（read/ls 没有这两步）。
+
+```ts
+import { mkdir as fsMkdir, writeFile as fsWriteFile } from "node:fs/promises";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { text } from "pi-ai";
+import type { AgentTool } from "pi-agent-core";
+import { WORKSPACE_ROOT } from "../utils/paths.ts";
+
 export interface WriteOperations {
     writeFile: (path: string, content: string) => Promise<void>;
-    mkdir: (path: string) => Promise<void>;
+    mkdir: (dir: string) => Promise<void>;
 }
-export interface EditOperations {
-    readFile: (path: string) => Promise<string>;
-    writeFile: (path: string, content: string) => Promise<void>;
-    access: (path: string) => Promise<void>;
+
+const defaultWriteOperations: WriteOperations = {
+    writeFile: (path, content) => fsWriteFile(path, content, "utf-8"),
+    mkdir: (dir) => fsMkdir(dir, { recursive: true }).then(() => {}),
 }
+
+export function createWriteTool(
+    workspaceRoot: string = WORKSPACE_ROOT,
+    operates: WriteOperations = defaultWriteOperations,
+): AgentTool {
+    return {
+        name: "write_note",   // ⚠️ 必须与 mock 的 toolCall.name 一致
+        label: "写入文件",
+        description: "写入文件内容，自动创建父目录。",
+        parameters: {
+            type: "object",
+            properties: {
+                path: { type: "string" },
+                content: { type: "string" },
+            },
+        },
+        execute: async (_toolCallId, params) => {
+            const path = params.path as string;
+            const content = params.content as string;
+
+            // ① 路径安全：解析 + 阻止逃逸出 workspace（写工具最危险的洞）
+            const absolutePath = resolve(workspaceRoot, path);
+            const relativePath = relative(workspaceRoot, absolutePath);
+            if (relativePath.startsWith("..") || isAbsolute(relativePath)) {
+                throw new Error(`Write path escapes workspace: ${path}`);
+            }
+
+            // ② 自动创建父目录（仿生产：先 mkdir 再 write）
+            await operates.mkdir(dirname(absolutePath))
+
+            // ③ 写入（失败会 throw → 由 loop 第 4 步 catch 成 isError）
+            await operates.writeFile(absolutePath, content);
+
+            return {
+                content: [text(`Successfully wrote ${content.length} bytes to ${path}`)],
+                details: {},
+            }
+        }
+    }
+}
+
+export const writeTool: AgentTool = createWriteTool()
+```
+
+**实现要点**：
+- 逃逸守卫最危险（`resolve` / `relative` / `isAbsolute` 三行）——写类工具必须挡住 `../` 越出 workspace。
+- 自动建父目录（先 mkdir 再 write，`{ recursive: true }`）。
+- 失败即抛（`throw` → loop catch 成 isError）；`name` 必须是 `write_note`（与 mock 一致）。
+
+**验证**：单测确认「写→读回、父目录自动创建、逃逸拒绝」（`coding-agent/test/tools/write.test.ts`）；`npm run typecheck` → exit 0。
+
+#### Step 1.1c：ls.ts —— list_files 工具（✅ 已实现）
+
+**文件**：`packages/coding-agent/src/tools/ls.ts`
+
+前置：`WORKSPACE_ROOT` 从 `../utils/paths.ts` 导入；`pathExists` 从 `./path-utils.ts` 导入。
+
+```ts
+import { pathExists } from "./path-utils.ts";
+import { readdir as fsReaddir, stat as fsStat } from "node:fs/promises";
+import { join } from "node:path";
+import { text } from "pi-ai";
+import type { AgentTool } from "pi-agent-core";
+import { WORKSPACE_ROOT } from "../utils/paths.ts";
+
+const DEFAULT_LIMIT = 500;
+
 export interface LsOperations {
     exists: (path: string) => Promise<boolean>;
     stat: (path: string) => Promise<{ isDirectory(): boolean }>;
     readdir: (path: string) => Promise<string[]>;
 }
-export interface GrepOperations { isDirectory: () => Promise<boolean>; readFile: () => Promise<string> } // 桩
-export interface FindOperations { exists: () => Promise<boolean>; glob: () => Promise<string[]> }        // 桩
-export interface BashOperations { exec: () => Promise<{ stdout: string; exitCode: number }> }            // 桩
+const defaultLsOperations: LsOperations = {
+    exists: pathExists,
+    stat: fsStat,
+    readdir: fsReaddir,
+};
+
+/** 返回给 LLM 的附加信息：目录条目数限制是否触发 */
+export interface LsToolDetails {
+    entryLimitReached?: number;   // 命中 limit 时记录条目总数
+}
+
+export function createLsTool(
+    workspaceRoot: string = WORKSPACE_ROOT,
+    ops: LsOperations = defaultLsOperations,
+): AgentTool {
+    return {
+        name: "list_files",   // ⚠️ 必须与 mock 的 toolCall.name 一致（不是生产版的 "ls"）
+        label: "列出文件",
+        description: "列出目录内容，目录名带 / 后缀，默认最多 500 条。",
+        parameters: { type: "object", properties: { path: { type: "string" }, limit: { type: "number" } } },
+        execute: async (_toolCallId, params) => {
+            // ① 解析路径，缺省 "."
+            const dirPath = join(workspaceRoot, (params.path as string) || ".");
+            // ② 存在性检查
+            if (!(await ops.exists(dirPath))) throw new Error(`Path not found: ${dirPath}`);
+            // ③ 必须是目录
+            const stat = await ops.stat(dirPath);
+            if (!stat.isDirectory()) throw new Error(`Not a directory: ${dirPath}`);
+            // ④ 读取 + 大小写不敏感排序
+            let entries = await ops.readdir(dirPath);
+            entries = entries.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+            // ⑤ 截断：目录加 "/" 后缀，limit 触发时记 entryLimitReached
+            const effectiveLimit = (params.limit as number) ?? DEFAULT_LIMIT;
+            const results: string[] = [];
+            let entryLimitReached = 0;
+            for (const entry of entries) {
+                if (results.length >= effectiveLimit) { entryLimitReached = entries.length; break; }
+                let suffix = "";
+                try {
+                    const entryStat = await ops.stat(join(dirPath, entry));
+                    if (entryStat.isDirectory()) suffix = "/";
+                } catch { continue; }   // stat 不了就跳过该条
+                results.push(entry + suffix);
+            }
+            const output = results.length === 0 ? "(empty directory)" : results.join("\n");
+            return { content: [text(output)], details: entryLimitReached > 0 ? { entryLimitReached } : {} };
+        },
+    };
+}
+
+export const lsTool: AgentTool = createLsTool();
 ```
 
-新建 `packages/agent/src/tools/read.ts`（**以 `pi-agent/workspace/` 为工作区根**）：
+**实现要点**（对齐生产 `ls.ts` 顺序）：
+- 六步顺序：解析 → exists → isDirectory → readdir → 排序 → 逐条 stat 标 "/" + limit 截断。
+- 失败即抛：`Path not found` / `Not a directory` 由 loop 第 4 步 catch 成 isError。
+- `entryLimitReached` 记录**条目总数**（非布尔），LLM 可判断还剩多少没列。
+- 生产用 abort `reject(new Error(...))` 双路径（启动前检查 + 运行中监听）；教学版可只做 `if (signal?.aborted) throw`（路径①）。
+
+**验证**：临时单测确认「a.txt/b.txt/subdir/ 排序 + 后缀、limit:1 → entryLimitReached=3、missing → throw」；`npm run typecheck` → exit 0。
+
+#### Step 1.1d：edit.ts —— edit_file 工具（✅ 已实现）
+
+> 已于 2026-08-19 实现并按下方代码核对（实现时清理了多余的 `node:fs` 同步 import）。
+
+**文件**：`packages/coding-agent/src/tools/edit.ts`
+
+生产版 edit 很重（`edits[]` 数组 + 非重叠校验、diff 渲染、unified patch、行尾规范化），教学版收敛为**单次精确替换**：参数 `{ path, oldText, newText }`。
 
 ```ts
-import { access, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { access as fsAccess, readFile as fsReadFile, writeFile as fsWriteFile } from "node:fs/promises";
+import { isAbsolute, join, relative } from "node:path";
 import { text } from "pi-ai";
-import type { AgentTool } from "../types.ts";
+import type { AgentTool } from "pi-agent-core";
+import { WORKSPACE_ROOT } from "../utils/paths.ts";
 
-const WORKSPACE = join(import.meta.dirname, "../../../../workspace");
-
-export const readTool: AgentTool = {
-  name: "read_file",
-  label: "读取文件",
-  description: "读取工作区文件内容。",
-  parameters: { type: "object", properties: { path: { type: "string" } } },
-  execute: async (_id, params) => {
-    const path = params.path as string;
-    const absolute = join(WORKSPACE, path);
-    await access(absolute);                       // 存在性检查
-    const content = await readFile(absolute, "utf-8");
-    return {
-      content: [text(content)],
-      details: { totalFileLines: content.split("\n").length },  // 仿生产 read.ts:275
-    };
-  },
+export interface EditOperations {
+    readFile: (path: string) => Promise<string>;
+    writeFile: (path: string, content: string) => Promise<void>;
+    access: (path: string) => Promise<void>;
+}
+const defaultEditOperations: EditOperations = {
+    readFile: (path) => fsReadFile(path, "utf-8"),
+    writeFile: (path, content) => fsWriteFile(path, content, "utf-8"),
+    access: (path) => fsAccess(path),
 };
+
+export function createEditTool(
+    workspaceRoot: string = WORKSPACE_ROOT,
+    ops: EditOperations = defaultEditOperations,
+): AgentTool {
+    return {
+        name: "edit_file",
+        label: "编辑文件",
+        description: "用精确文本替换修改文件（oldText 必须在文件中唯一）。",
+        parameters: {
+            type: "object",
+            properties: { path: { type: "string" }, oldText: { type: "string" }, newText: { type: "string" } },
+            required: ["path", "oldText", "newText"],
+        },
+        execute: async (_toolCallId, params) => {
+            const path = params.path as string;
+            const oldText = params.oldText as string;
+            const newText = (params.newText as string) ?? "";
+
+            // ① 解析绝对路径
+            const absolute = join(workspaceRoot, path);
+            // ② 逃逸守卫（写类工具最危险：挡住 ../ 越出 workspace，照抄 write.ts 三行）
+            const rel = relative(workspaceRoot, absolute);
+            if (rel.startsWith("..") || isAbsolute(rel)) throw new Error(`Edit path escapes workspace: ${path}`);
+            // ③ 存在性检查（access 失败会 throw → loop catch 成 isError）
+            await ops.access(absolute);
+            // ④ 读原文 + 匹配校验
+            const content = await ops.readFile(absolute);
+            if (!oldText) throw new Error("oldText must not be empty");
+            const index = content.indexOf(oldText);
+            if (index === -1) throw new Error(`oldText not found in ${path}`);
+            if (content.indexOf(oldText, index + 1) !== -1) throw new Error(`oldText is not unique in ${path}`);
+            // ⑤ 替换 + 写回
+            const newContent = content.slice(0, index) + newText + content.slice(index + oldText.length);
+            await ops.writeFile(absolute, newContent);
+            // ⑥ 返回（仿生产 edit.ts:330：错误信息带路径）
+            return { content: [text(`Successfully replaced 1 block in ${path}`)], details: {} };
+        },
+    };
+}
+
+export const editTool: AgentTool = createEditTool();
 ```
 
-> `Write` / `Edit` / `Ls` 照同一模式（`node:fs/promises` + Operations），各自实现 `write_file` / `edit_file` / `list_files`；`Grep` / `Find` / `Bash` 只留桩（`execute` 抛「未实现」）。
+**实现要点**：
+- 第 ④ 步两个检查是灵魂：oldText 不存在 / 出现多处 → **拒绝执行而不是猜**，替换错位置比不替换更糟。
+- 逃逸守卫比 ls 更必要（读+写，能覆盖工作区外文件）。
+- mock 目前无 edit 关键词规则 → `edit_file` 暂不会被触发；需要时在 `mock.ts` 加「修改/替换 → edit_file」。
 
-**验证**：`npm run typecheck` → exit 0。
+**验证（✅ 已通过）**：临时单测断言四件事——正常替换读回、oldText 缺失抛错且**文件未改动**、oldText 重复抛 not unique、`../` 逃逸抛错；`npm run typecheck` → exit 0。
 
 #### Step 1.2：mock 规则 → toolCall（`packages/ai/src/providers/mock.ts`）
 
