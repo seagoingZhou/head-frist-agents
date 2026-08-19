@@ -1,8 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { createUserMessage, type EventStream, type Message } from "pi-ai";
+import { createUserMessage, type EventStream, type Message, type Model } from "pi-ai";
 import { agentLoop } from "../src/agent-loop.ts";
-import { mockModel } from "../../ai/src/model.ts";
 import type { AgentEvent, AgentMessage } from "../src/types.ts";
+
+/** 教学/测试专用 mock model（config.model 用）。生产 src 不依赖它，故就地定义于测试。 */
+const mockModel: Model<"mock"> = {
+  id: "mock",
+  name: "Mock Model",
+  api: "mock",
+  provider: "mock",
+  reasoning: false,
+  input: ["text"],
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  contextWindow: 8192,
+  maxTokens: 1024,
+};
 
 /** 把事件压成一行可读文本（只打关键字段，避免刷屏） */
 function summarize(event: AgentEvent): string {

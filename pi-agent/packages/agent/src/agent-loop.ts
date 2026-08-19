@@ -13,8 +13,8 @@ import  {
     EventStream,
     streamSimple,
     ToolResult,
-    ToolResultMessage
-     
+    ToolResultMessage,
+    text
 } from "pi-ai";
 
 
@@ -89,8 +89,9 @@ async function runLoop(
                 currentAgentContext.messages.push(message);
                 newMessages.push(message);
             }
+            queuedMessages = [];
         }
-        queuedMessages = [];
+        
 
         // LLM助手 流式回复
         const assistantMessage = await streamAssistantResponse(
@@ -107,6 +108,7 @@ async function runLoop(
             stream.push({type:"turn_end", message:assistantMessage, toolResults:[]})
             stream.push({type:"agent_end",messages:newMessages})
             stream.end(newMessages)
+            return
         }
 
         const toolCalls = assistantMessage.content
@@ -149,61 +151,110 @@ async function runLoop(
             queuedMessages = (await config.getQueuedMessages?.()) || [];
         }
 
-        stream.push(
-            {
-                type : "agent_end",
-                messages : newMessages
-            }
-        );
-
-        stream.end(newMessages);
     }
+    stream.push(
+        {
+            type : "agent_end",
+            messages : newMessages
+        }
+    );
 
-    async function excuteToolCalls(
+    stream.end(newMessages);
+
+}
+
+async function excuteToolCalls(
         tools : AgentTool[] | undefined,
         assistantMessage : AssistantMessage,
         signal : AbortSignal | undefined,
         stream : EventStream<AgentEvent, AgentMessage[]>,
         getQueuedMessages ?: AgentLoopConfig["getQueuedMessages"],
     ): Promise<{ toolResults : ToolResultMessage[],queuedMessages ?: AgentMessage[]}> {
-        const results : ToolResultMessage[] = [];
-        let queuedMessages : AgentMessage[] | undefined;
-        // const toolCalls = assistantMessage.content
-        //                                     .filter(
-        //                                         (c) =>
-        //                                             c.type === "toolCall"
-        //                                     );
-        // for (let index = 0; index < toolCalls.length; index++) {
-        //     const toolCall = toolCalls[index];
-        //     const tool = tools?.find((t) => t.name === toolCall.name);
+    const results : ToolResultMessage[] = [];
+    let queuedMessages : AgentMessage[] | undefined;
+    const toolCalls = assistantMessage.content
+                                        .filter(
+                                            (c) =>
+                                                c.type === "toolCall"
+                                        );
+    const toolResults: ToolResultMessage[] = []
+    for (let index = 0; index < toolCalls.length; index++) {
+        const toolCall = toolCalls[index];
+        const tool = tools?.find((t) => t.name === toolCall.name);
 
-        //     stream.push(
-        //         {
-        //             type : "tool_execution_start",
-        //             toolCallId : toolCall.id,
-        //             toolName : toolCall.name,
-        //             args : toolCall.arguments
-        //         }
-        //     );
+        stream.push(
+            {
+                type : "tool_execution_start",
+                toolCallId : toolCall.id,
+                toolName : toolCall.name,
+                args : toolCall.arguments
+            }
+        );
 
-        //     let result : AgentToolResult;
-        //     let isError = false;
+        let result : AgentToolResult;
+        let isError = false;
 
-        //     try {
-        //         if (!tool) {
-        //             throw new Error(`Tool ${toolCall.name} not found`);
-        //         }
+        try {
+            if (!tool) {
+                throw new Error(`Tool ${toolCall.name} not found`);
+            }
+            result = await tool.execute(
+                toolCall.id,
+                toolCall.arguments,
+                signal
+            );
+        } catch (error) {
+            result = createErrorToolResult(
+                error instanceof Error ?
+                error.message:
+                String(error)
+            );
+            isError = true;
+        }
 
+        stream.push(
+            {
+                type: "tool_execution_end",
+                toolCallId: toolCall.id,
+                toolName: toolCall.name,
+                result,
+                partialResult: result,
+            }
+        )
+        const toolResultMessage: ToolResultMessage = {
+            role: "toolResult",
+            toolCallId: toolCall.id,
+            toolName: toolCall.name,
+            content: result.content,
+            details: result.details,
+            isError,
+            timestamp: Date.now(),
+        };
+        stream.push(
+            {
+                type: "message_start",
+                message: toolResultMessage
+            }
+        );
+        stream.push(
+            {
+                type: "message_end",
+                message: toolResultMessage
+            }
+        );
+        toolResults.push(toolResultMessage);
 
-        //     }
-
-        // }
-
-
-
-        return {toolResults:results, queuedMessages}
     }
 
+    return {toolResults:toolResults, queuedMessages}
+}
+
+
+function createErrorToolResult(message: string): AgentToolResult {
+    return {
+        content: [text(message)],
+        details: {}
+    }
 }
 
 
