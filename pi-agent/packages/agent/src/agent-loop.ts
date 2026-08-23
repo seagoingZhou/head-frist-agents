@@ -614,6 +614,12 @@ async function streamAssistantResponse(
 
     let messages = context.messages;
 
+    // [1] 同层变换（可选）：裁剪 / 注入 / 压缩，类型仍是 AgentMessage[]
+    if (config.transformContext) {
+        messages = await config.transformContext(messages, signal);
+    }
+
+    // [2] 跨层翻译（必填）：AgentMessage[] → Message[]，自定义转 user / 过滤 excludeFromContext
     const llmMessages = await config.convertToLlm(messages);
 
     const llmContext = {

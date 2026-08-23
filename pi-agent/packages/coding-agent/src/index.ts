@@ -1,5 +1,8 @@
 
 export * from "./core/types"
+export * from "./core/messages"
+
+
 export * from "./tools/tool-definition-wrapper"
 export * from "./tools/write"
 export * from "./tools/read"

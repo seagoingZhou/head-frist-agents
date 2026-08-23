@@ -77,7 +77,7 @@ describe("agent loop with mock model —— provider 分发（Level 2）", () =>
   it("普通文本 → 返回 assistant 文本，roles=[user, assistant]", async () => {
     const newMessages = await consumeWithLogging(buildStream("你好"), "普通文本：你好");
     expect(newMessages.map((m) => m.role)).toEqual(["user", "assistant"]);
-    expect(newMessages[1].content[0].type).toBe("text");
+    expect((newMessages[1] as Message).content[0].type).toBe("text");
   });
 
   it("带历史的 context → 正常追加回复", async () => {

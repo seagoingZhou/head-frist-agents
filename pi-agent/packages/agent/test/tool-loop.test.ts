@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { createUserMessage, messageText, text, type Message, type Model, type TextContent, type ToolCall } from "pi-ai";
 import { Type } from "@sinclair/typebox";
 import { agentLoop } from "../src/agent-loop.ts";
-import type { AgentTool } from "../src/types.ts";
+import type { AgentMessage, AgentTool } from "../src/types.ts";
 import { readTool, writeTool, lsTool, editTool } from "../../coding-agent/src/index.ts";
 
 /** 教学/测试专用 mock model（config.model 用）。生产 src 不依赖它，故就地定义于测试。 */
@@ -32,9 +32,9 @@ function run(prompt: string) {
   );
 }
 
-/** 取最后一条 assistant 的纯文本（拼接 text block） */
-function assistantText(messages: Message[]): string {
-  const last = messages.at(-1)!;
+/** 取最后一条 assistant 的纯文本（拼接 text block）。AgentMessage 可能含自定义消息（无 content），先收窄到标准 Message。 */
+function assistantText(messages: AgentMessage[]): string {
+  const last = messages.at(-1)! as Message;
   return (last.content as Array<TextContent | ToolCall>)
     .filter((b) => b.type === "text")
     .map((b) => (b as TextContent).text)
