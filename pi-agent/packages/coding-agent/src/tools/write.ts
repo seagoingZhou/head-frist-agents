@@ -2,8 +2,10 @@ import { mkdir as fsMkdir, writeFile as fsWriteFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { text } from "pi-ai";
 import type { AgentTool } from "pi-agent-core";
+import type { ToolDefinition } from "../core/types.ts";
 import { type Static, Type } from "@sinclair/typebox";
 import { WORKSPACE_ROOT } from "../utils/paths.ts";
+import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 
 const WriteSchema = Type.Object({
   path: Type.String({ description: "要写入的文件路径（相对工作区的路径，父目录会自动创建）。" }),
@@ -21,16 +23,20 @@ const defaultWriteOperations: WriteOperations = {
     mkdir: (dir) => fsMkdir(dir, {recursive : true}).then(() => {}),
 }
 
-export function createWriteTool(
+export function createWriteToolDefinition(
     workspaceRoot : string = WORKSPACE_ROOT,
     operates : WriteOperations = defaultWriteOperations,
-): AgentTool {
+): ToolDefinition {
     return {
         name : "write_note",   // ⚠️ 必须与 mock 的 toolCall.name 一致，见下
         label : "写入文件",
         description : "写入文件内容，自动创建父目录。",
         parameters: WriteSchema as Record<string, unknown>,
-        execute: async(_toolCallId, params) => {
+        // 系统提示/UI 字段：当前未接入渲染，仅占位
+        promptSnippet: "写入工作区文件",
+        renderCall: () => undefined,
+        renderResult: () => undefined,
+        execute: async(_toolCallId, params, _signal, _onUpdate, _ctx) => {
             const { path, content } = params as WriteInput;
 
             // ① 路径安全：解析 + 阻止逃逸出 workspace（写工具最危险的洞）
@@ -54,6 +60,16 @@ export function createWriteTool(
         }
 
     }
+}
+
+export const writeToolDefinition: ToolDefinition = createWriteToolDefinition()
+
+/** 返回可直接交给 agent loop 执行的 write_note 工具（AgentTool 形态）。 */
+export function createWriteTool(
+    workspaceRoot: string = WORKSPACE_ROOT,
+    operates: WriteOperations = defaultWriteOperations,
+): AgentTool {
+    return wrapToolDefinition(createWriteToolDefinition(workspaceRoot, operates));
 }
 
 export const writeTool: AgentTool = createWriteTool()

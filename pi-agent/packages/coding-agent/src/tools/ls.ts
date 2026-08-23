@@ -3,8 +3,10 @@ import { readdir as fsReaddir, stat as fsStat } from "node:fs/promises";
 import { join } from "node:path";
 import { text } from "pi-ai";
 import type { AgentTool } from "pi-agent-core";
+import type { ToolDefinition } from "../core/types.ts";
 import { type Static, Type } from "@sinclair/typebox";
 import { WORKSPACE_ROOT } from "../utils/paths.ts";
+import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 
 
 
@@ -33,16 +35,20 @@ export interface LsToolDetails {
     entryLimitReached?: number;   // 命中 limit 时记录条目数
 }
 
-export function createLsTool(
+export function createLsToolDefinition(
     workspaceRoot : string = WORKSPACE_ROOT,
     ops : LsOperations = defaultLsOperations,
-): AgentTool {
+): ToolDefinition {
     return {
         name: "list_files",
         label: "列出文件",
         description: "列出目录内容,目录名带 / 后缀,默认最多 500 条。",
         parameters: LsSchema as Record<string, unknown>,
-        execute: async (_toolCallId, params) => {
+        // 系统提示/UI 字段：当前未接入渲染，仅占位
+        promptSnippet: "列出工作区目录",
+        renderCall: () => undefined,
+        renderResult: () => undefined,
+        execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
             const { path, limit } = params as LsInput;
 
             // ① 解析路径,缺省 "."
@@ -84,6 +90,16 @@ export function createLsTool(
             }
         }
     }
+}
+
+export const lsToolDefinition: ToolDefinition = createLsToolDefinition();
+
+/** 返回可直接交给 agent loop 执行的 list_files 工具（AgentTool 形态）。 */
+export function createLsTool(
+    workspaceRoot: string = WORKSPACE_ROOT,
+    ops: LsOperations = defaultLsOperations,
+): AgentTool {
+    return wrapToolDefinition(createLsToolDefinition(workspaceRoot, ops));
 }
 
 export const lsTool: AgentTool = createLsTool();

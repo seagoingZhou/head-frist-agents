@@ -10,6 +10,7 @@
 - ✅ 前置：mock + 文本版 agent loop（`01-mock-model-agent-loop.md` 的 Step 0-8）
 - ✅ **阶段一全部落地**：四个真实工具（read_file / write_note / list_files / edit_file）+ bash / find / grep 接口桩；mock 关键词 → toolCall 规则（Step 1.2）；`executeToolCalls` 基础执行（Step 1.3）；工具闭环集成测试（用例 1）
 - ✅ **阶段二全部落地**：生产式五步管道（prepareArguments / validate / beforeToolCall / execute / afterToolCall）+ 串并行 + 流式进度 + TypeBox 校验 + 用例 2 验收测试 —— `npm run typecheck` exit 0、`npm test` 15/15
+- ✅ **阶段三全部落地**：三层递进 Tool → AgentTool → ToolDefinition + `wrapToolDefinition` 桥接（对齐生产 `core/tools/` 布局）；工具改**双工厂**（`createXxxToolDefinition` 定义 + `createXxxTool` 便利 = wrap(定义)）；UI / 系统提示字段桩实现 —— 15/15
 
 ---
 
@@ -31,6 +32,8 @@
 - `AgentTool` 是核心 loop **实际执行**的对象（有 `execute`）。
 - `ToolDefinition` 是**产品/扩展层**的完整定义（渲染、prompt、权限），通过 `wrapToolDefinition` 降级成 AgentTool 交给 loop。
 - 这样：核心（pi-agent-core）只依赖 `AgentTool`，产品（pi-coding-agent）持有完整 `ToolDefinition`，两者解耦。
+
+> ✅ 已于 2026-08-19 落地：分层类型 + `wrapToolDefinition` 桥接 + 桩 UI 字段。实际文件与双工厂命名见「阶段三」，工具实现见 Step 1.1a-d。
 
 ### 1.2 五步管道：从 LLM 的 ToolCall 到 ToolResultMessage
 
@@ -153,16 +156,18 @@ const defaultReadOperations: ReadOperations = {
 
 ```
 packages/coding-agent/src/
-  utils/paths.ts        // WORKSPACE_ROOT 唯一出口
-  tools/path-utils.ts   // pathExists 帮助函数
-  tools/read.ts         // read_file     → Step 1.1a
-  tools/write.ts        // write_note    → Step 1.1b（逃逸守卫 + 自动建父目录）
-  tools/ls.ts           // list_files    → Step 1.1c
-  tools/edit.ts         // edit_file     → Step 1.1d
-  tools/bash.ts         // 桩：仅 BashOperations 接口
-  tools/find.ts         // 桩：仅 FindOperations 接口
-  tools/grep.ts         // 桩：仅 GrepOperations 接口
-  index.ts              // export * 全部 7 个工具模块
+  utils/paths.ts              // WORKSPACE_ROOT 唯一出口
+  core/types.ts               // 第 3 层 ToolDefinition + ExtensionContext + 桩渲染类型
+  tools/path-utils.ts         // pathExists 帮助函数
+  tools/tool-definition-wrapper.ts // 桥接：wrapToolDefinition / wrapToolDefinitions / createToolDefinitionFromAgentTool
+  tools/read.ts               // read_file  → Step 1.1a（createReadToolDefinition 定义 + createReadTool 便利）
+  tools/write.ts              // write_note → Step 1.1b（…双工厂；逃逸守卫 + 自动建父目录）
+  tools/ls.ts                 // list_files → Step 1.1c（…双工厂）
+  tools/edit.ts               // edit_file  → Step 1.1d（…双工厂）
+  tools/bash.ts               // 桩：仅 BashOperations 接口
+  tools/find.ts               // 桩：仅 FindOperations 接口
+  tools/grep.ts               // 桩：仅 GrepOperations 接口
+  index.ts                    // export * core + wrapper + 全部工具模块
 ```
 
 > **四工具的通用模式**（每个文件自包含同构）：
@@ -186,6 +191,8 @@ import { access as fsAccess, readFile as fsReadFile } from "node:fs/promises";
 import { join } from "node:path";
 import { text } from "pi-ai";
 import type { AgentTool } from "pi-agent-core";
+import type { ToolDefinition } from "../core/types.ts";
+import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { WORKSPACE_ROOT } from "../utils/paths.ts";
 
 export interface ReadOperations {
@@ -200,16 +207,20 @@ const defaultReadOperations: ReadOperations = {
 /** details 里携带的信息（仿生产 read.ts:275：附加文件总行数） */
 export interface ReadToolDetails { totalFileLines: number; }
 
-export function createReadTool(
+// ── 第三层：ToolDefinition（真实现；execute 带第 5 参 ctx；UI / 系统提示字段桩） ──
+export function createReadToolDefinition(
   workspaceRoot: string = WORKSPACE_ROOT,
   ops: ReadOperations = defaultReadOperations,
-): AgentTool {
+): ToolDefinition {
   return {
     name: "read_file",
     label: "读取文件",
     description: "读取工作区文件内容。",
-    parameters: { type: "object", properties: { path: { type: "string" } } },
-    execute: async (_toolCallId, params) => {
+    parameters: { type: "object", properties: { path: { type: "string" } } }, // 现已 TypeBox：ReadSchema
+    promptSnippet: "读取工作区文件",          // 桩：系统提示 Available tools 段
+    renderCall: () => undefined,              // 桩：UI 未接入
+    renderResult: () => undefined,            // 桩：UI 未接入
+    execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
       const path = params.path as string;
       const absolute = join(workspaceRoot, path);
       await ops.access(absolute);                 // 存在性检查
@@ -220,6 +231,14 @@ export function createReadTool(
       };
     },
   };
+}
+
+// ── 第二层：AgentTool 便利 = wrapToolDefinition(createReadToolDefinition(...)) ──
+export function createReadTool(
+  workspaceRoot: string = WORKSPACE_ROOT,
+  ops: ReadOperations = defaultReadOperations,
+): AgentTool {
+  return wrapToolDefinition(createReadToolDefinition(workspaceRoot, ops));
 }
 
 export const readTool: AgentTool = createReadTool();
@@ -254,10 +273,11 @@ const defaultWriteOperations: WriteOperations = {
     mkdir: (dir) => fsMkdir(dir, { recursive: true }).then(() => {}),
 }
 
-export function createWriteTool(
+// ── 第三层：ToolDefinition（真实现；execute 带第 5 参 ctx；UI/系统提示字段桩见 read 示例与阶段三） ──
+export function createWriteToolDefinition(
     workspaceRoot: string = WORKSPACE_ROOT,
     operates: WriteOperations = defaultWriteOperations,
-): AgentTool {
+): ToolDefinition {
     return {
         name: "write_note",   // ⚠️ 必须与 mock 的 toolCall.name 一致
         label: "写入文件",
@@ -294,6 +314,15 @@ export function createWriteTool(
     }
 }
 
+export const writeToolDefinition: ToolDefinition = createWriteToolDefinition();
+
+// ── 第二层：AgentTool 便利 = wrapToolDefinition(createWriteToolDefinition(...)) ──
+export function createWriteTool(
+    workspaceRoot: string = WORKSPACE_ROOT,
+    operates: WriteOperations = defaultWriteOperations,
+): AgentTool {
+    return wrapToolDefinition(createWriteToolDefinition(workspaceRoot, operates));
+}
 export const writeTool: AgentTool = createWriteTool()
 ```
 
@@ -336,10 +365,10 @@ export interface LsToolDetails {
     entryLimitReached?: number;   // 命中 limit 时记录条目总数
 }
 
-export function createLsTool(
+export function createLsToolDefinition(
     workspaceRoot: string = WORKSPACE_ROOT,
     ops: LsOperations = defaultLsOperations,
-): AgentTool {
+): ToolDefinition {
     return {
         name: "list_files",   // ⚠️ 必须与 mock 的 toolCall.name 一致（不是生产版的 "ls"）
         label: "列出文件",
@@ -375,6 +404,15 @@ export function createLsTool(
     };
 }
 
+export const lsToolDefinition: ToolDefinition = createLsToolDefinition();
+
+// ── 第二层：AgentTool 便利 = wrapToolDefinition(createLsToolDefinition(...)) ──
+export function createLsTool(
+    workspaceRoot: string = WORKSPACE_ROOT,
+    ops: LsOperations = defaultLsOperations,
+): AgentTool {
+    return wrapToolDefinition(createLsToolDefinition(workspaceRoot, ops));
+}
 export const lsTool: AgentTool = createLsTool();
 ```
 
@@ -412,10 +450,10 @@ const defaultEditOperations: EditOperations = {
     access: (path) => fsAccess(path),
 };
 
-export function createEditTool(
+export function createEditToolDefinition(
     workspaceRoot: string = WORKSPACE_ROOT,
     ops: EditOperations = defaultEditOperations,
-): AgentTool {
+): ToolDefinition {
     return {
         name: "edit_file",
         label: "编辑文件",
@@ -452,6 +490,15 @@ export function createEditTool(
     };
 }
 
+export const editToolDefinition: ToolDefinition = createEditToolDefinition();
+
+// ── 第二层：AgentTool 便利 = wrapToolDefinition(createEditToolDefinition(...)) ──
+export function createEditTool(
+    workspaceRoot: string = WORKSPACE_ROOT,
+    ops: EditOperations = defaultEditOperations,
+): AgentTool {
+    return wrapToolDefinition(createEditToolDefinition(workspaceRoot, ops));
+}
 export const editTool: AgentTool = createEditTool();
 ```
 
@@ -795,6 +842,73 @@ async function excuteToolCalls(...): Promise<ExecutedToolCallBatch> {
 | prepareArguments 规范化 | legacy `{oldText,newText}` 折叠进 `edits[]`；字符串化 `edits` 解析回数组 |
 
 > 坑：用例 3 的测试工具 `parameters` 必须是 **TypeBox schema**——裸 JSON 对象会被 `validateToolArguments` 拒，工具不执行、onUpdate 永不触发（调试实测）。
+
+---
+
+### 阶段三：三层递进 Tool → AgentTool → ToolDefinition + wrapToolDefinition 桥接（✅ 已完成）
+
+> **目标**：把工具系统从「工具本体（AgentTool）」升级为生产式三层——核心包只认 `AgentTool`，产品包持有完整 `ToolDefinition`（含系统提示 / UI 元数据），`wrapToolDefinition` 桥接二者。UI / 系统提示字段当前阶段**桩实现**。
+
+#### 三层落点（对齐生产）
+
+| 层 | 类型 | 我们的文件 | 生产参考 |
+|---|---|---|---|
+| 1 | `Tool` | `packages/ai/src/types.ts` | `pi/packages/ai/src/types.ts:427` |
+| 2 | `AgentTool` | `packages/agent/src/types.ts` | `pi/packages/agent/src/types.ts:371` |
+| 3 | `ToolDefinition` | `packages/coding-agent/src/core/types.ts` | `pi/packages/coding-agent/src/core/extensions/types.ts:435` |
+| 桥接 | `wrapToolDefinition` | `packages/coding-agent/src/tools/tool-definition-wrapper.ts` | `pi/…/coding-agent/src/core/tools/tool-definition-wrapper.ts` |
+
+#### 第 3 层类型（`core/types.ts`）
+
+```ts
+export interface ExtensionContext { cwd?: string; }   // execute 第 5 参：产品层扩展上下文（桩）
+
+export interface ToolDefinition extends Tool {
+    label: string;
+    promptSnippet?: string;       // 桩：系统提示 Available tools 段
+    promptGuidelines?: string[];  // 桩：附加 Guidelines
+    prepareArguments?: (args: unknown) => Record<string, unknown>;
+    executionMode?: ToolExecutionMode;
+    execute(toolCallId, params, signal?, onUpdate?, ctx?: ExtensionContext): Promise<AgentToolResult>;
+    renderCall?: (...args: unknown[]) => unknown;     // 桩：UI 未接入
+    renderResult?: (...args: unknown[]) => unknown;   // 桩：UI 未接入
+}
+```
+
+#### 桥接（`tools/tool-definition-wrapper.ts`）
+
+```ts
+export function wrapToolDefinition(definition: ToolDefinition, ctxFactory?: () => ExtensionContext): AgentTool {
+    return {
+        name: definition.name, label: definition.label, description: definition.description,
+        parameters: definition.parameters,
+        prepareArguments: definition.prepareArguments, executionMode: definition.executionMode,
+        execute: (toolCallId, params, signal, onUpdate) =>
+            definition.execute(toolCallId, params, signal, onUpdate, ctxFactory?.()),   // 注入 ctx
+    };
+}
+export const wrapToolDefinitions = (definitions: ToolDefinition[], ctxFactory?: () => ExtensionContext) =>
+    definitions.map(d => wrapToolDefinition(d, ctxFactory));
+export function createToolDefinitionFromAgentTool(tool: AgentTool): ToolDefinition { /* 反向合成最小定义 */ }
+```
+
+#### 双工厂命名（对齐生产 read.ts:203/360）
+
+每个工具文件**同时导出两个工厂**：
+
+- `createXxxToolDefinition(...): ToolDefinition` —— **真实现**（第三层，execute 带 ctx、带 prompt / render 桩字段）。
+- `createXxxTool(...): AgentTool` —— **便利**（第二层）= `wrapToolDefinition(createXxxToolDefinition(...))`。
+- 单例 `xxxTool: AgentTool = createXxxTool()`（默认 workspace，供 loop 直接消费）。
+
+生产 `core/tools/read.ts` 同样成对导出（`createReadToolDefinition` + `createReadTool`）；`core/tools/index.ts` 聚合时成对 re-export，并提供 `createToolDefinition(name)`（→ 定义）与 `createTool(name)`（→ AgentTool）两套分发。
+
+#### 关键点
+
+- **核心 loop 零感知**：`agent-loop.ts` 只消费 `AgentTool`（第 2 层），`ToolDefinition` 的 prompt / render / ctx 不会进 core。
+- **UI / 系统提示字段当前仅桩**：`promptSnippet` / `promptGuidelines` / `renderCall` / `renderResult` 类型已定义、工具已占位（render 为 `() => undefined`，promptSnippet 给一句简介），系统提示生成与 UI 渲染未接入。
+- **工具名契约不变**：`read_file` / `write_note` / `list_files` / `edit_file`，mock toolCall 不受影响。
+
+**验证**：`npm run typecheck` exit 0；`npm test` 15/15（阶段一/二测试消费 `createXxxTool` / `xxxTool` 便利，即已经过桥接）。
 
 ---
 

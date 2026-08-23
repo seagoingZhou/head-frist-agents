@@ -2,8 +2,10 @@ import { access as fsAccess, readFile as fsReadFile, writeFile as fsWriteFile } 
 import { isAbsolute, join, relative } from "node:path";
 import { text } from "pi-ai";
 import type { AgentTool } from "pi-agent-core";
+import type { ToolDefinition } from "../core/types.ts";
 import { type Static, Type } from "@sinclair/typebox";
 import { WORKSPACE_ROOT } from "../utils/paths.ts";
+import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 
 export interface EditOperations {
     readFile: (path: string) => Promise<string>;
@@ -87,17 +89,21 @@ function prepareEditArguments(input: unknown): Record<string, unknown> {
 }
 
 
-export function createEditTool(
+export function createEditToolDefinition(
     workspaceRoot: string = WORKSPACE_ROOT,
     ops: EditOperations = defaultEditOperations
-): AgentTool {
+): ToolDefinition {
     return {
         name: "edit_file",
         label: "编辑文件",
         description: "对文件做一处或多处精确文本替换（每个 oldText 在原始文件中唯一且互不重叠，可一次改多处）。",
         parameters: EditSchema as Record<string, unknown>,
+        // 系统提示/UI 字段：当前未接入渲染，仅占位
+        promptSnippet: "编辑工作区文件",
+        renderCall: () => undefined,
+        renderResult: () => undefined,
         prepareArguments: prepareEditArguments,
-        execute: async(_toolCallId, params) => {
+        execute: async(_toolCallId, params, _signal, _onUpdate, _ctx) => {
             const { path, edits } = params as EditParams;
 
             // ① 解析绝对路径
@@ -153,6 +159,16 @@ export function createEditTool(
             }
         }
     }
+}
+
+export const editToolDefinition: ToolDefinition = createEditToolDefinition();
+
+/** 返回可直接交给 agent loop 执行的 edit_file 工具（AgentTool 形态）。 */
+export function createEditTool(
+    workspaceRoot: string = WORKSPACE_ROOT,
+    ops: EditOperations = defaultEditOperations,
+): AgentTool {
+    return wrapToolDefinition(createEditToolDefinition(workspaceRoot, ops));
 }
 
 export const editTool: AgentTool = createEditTool();

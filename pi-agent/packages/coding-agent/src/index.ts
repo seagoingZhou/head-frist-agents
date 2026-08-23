@@ -1,4 +1,6 @@
 
+export * from "./core/types"
+export * from "./tools/tool-definition-wrapper"
 export * from "./tools/write"
 export * from "./tools/read"
 export * from "./tools/ls"

@@ -21,6 +21,7 @@ const mockModel: Model<"mock"> = {
   maxTokens: 1024,
 };
 
+// readTool 等已由 coding-agent 内部 wrapToolDefinition(createXxxToolDefinition(...)) 桥接成 AgentTool
 const tools = [readTool, writeTool, lsTool, editTool];
 
 function run(prompt: string) {
@@ -75,7 +76,7 @@ describe("工具闭环 —— 阶段一", () => {
   it("写笔记 → write_note → 文件真实落盘到临时工作区（不污染真实 workspace）", async () => {
     const tmp = await mkdtemp(join(tmpdir(), "pi-loop-write-"));
     try {
-      // 用 createWriteTool 指向 tmp 的工厂：createWriteTool 通过 coding-agent 导出
+      // createWriteTool 指向 tmp 的 AgentTool（内部 wrapToolDefinition 桥接定义）
       const { createWriteTool } = await import("../../coding-agent/src/index.ts");
       const writeToolTmp = createWriteTool(tmp);
 
