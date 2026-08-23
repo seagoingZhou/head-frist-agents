@@ -2,7 +2,13 @@ import { access as fsAccess, readFile as fsReadFile } from "node:fs/promises";
 import { join } from "node:path";
 import { text } from "pi-ai";
 import type { AgentTool } from "pi-agent-core";
+import { type Static, Type } from "@sinclair/typebox";
 import { WORKSPACE_ROOT } from "../utils/paths.ts";
+
+const ReadSchema = Type.Object({
+  path: Type.String({ description: "要读取的文件路径（相对工作区的路径）。" }),
+});
+type ReadInput = Static<typeof ReadSchema>;
 
 export interface ReadOperations {
     readFile: (path: string) => Promise<string>;
@@ -31,9 +37,9 @@ export function createReadTool(
     name: "read_file",
     label: "读取文件",
     description: "读取工作区文件内容。",
-    parameters: { type: "object", properties: { path: { type: "string" } } },
+    parameters: ReadSchema as Record<string, unknown>,
     execute: async (_toolCallId, params) => {
-      const path = params.path as string;
+      const { path } = params as ReadInput;
       const absolute = join(workspaceRoot, path);
       await ops.access(absolute); // 存在性检查
       const content = await ops.readFile(absolute);

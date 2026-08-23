@@ -7,8 +7,9 @@
 
 ## 当前进度（2026-08-19）
 
-- ✅ 前置：mock + 文本版 agent loop + 工具系统**阶段一工具本体**全部就绪：`read_file` / `write_note` / `list_files` / `edit_file` 已实现；`bash` / `find` / `grep` 为接口桩；`operations.ts` 已删（各工具自包含接口）；mock 关键词 → toolCall 规则已落地（Step 1.2）
-- ⏳ 待完成：Step 1.3 `executeToolCalls`（agent-loop 当前还是空 stub）、Step 1.4 集成测试、阶段二五步管道
+- ✅ 前置：mock + 文本版 agent loop（`01-mock-model-agent-loop.md` 的 Step 0-8）
+- ✅ **阶段一全部落地**：四个真实工具（read_file / write_note / list_files / edit_file）+ bash / find / grep 接口桩；mock 关键词 → toolCall 规则（Step 1.2）；`executeToolCalls` 基础执行（Step 1.3）；工具闭环集成测试（用例 1）
+- ✅ **阶段二全部落地**：生产式五步管道（prepareArguments / validate / beforeToolCall / execute / afterToolCall）+ 串并行 + 流式进度 + TypeBox 校验 + 用例 2 验收测试 —— `npm run typecheck` exit 0、`npm test` 15/15
 
 ---
 
@@ -579,17 +580,41 @@ if (hasMoreToolCalls) {
 
 ---
 
-### 阶段二：五步管道
+### 阶段二：五步管道（✅ 已完成）
 
-> **目标**：把阶段一的简单执行升级为生产式**五步管道**（prepareArguments / validate / beforeToolCall / execute / afterToolCall），支持串行/并行与流式进度。**验收 = 集成测试用例 2**。
+> **目标**：把阶段一的简单执行升级为生产式**五步管道**（prepareArguments / validate / beforeToolCall / execute / afterToolCall），支持串行/并行与流式进度。**已实现并通过验收测试：`npm run typecheck` exit 0、`npm test` 15/15。**
 
-#### Step 2.1：类型增强（`packages/agent/src/types.ts`）
+#### 概览：一条 toolCall 的生命周期
 
-`AgentTool` 补 `prepareArguments?` / `executionMode?` / `onUpdate`，`AgentToolResult` 加 `terminate?`：
+```
+LLM 输出 ToolCall
+  ↓ ① prepareToolCallArguments   参数预处理（prepareArguments 垫片；无则零成本原样）
+  ↓ ② validateToolArguments      TypeBox 校验（成功→扁平 args；失败→THROW）
+  ↓ ③ beforeToolCall             产品层权限钩子（block → immediate 错误结果）
+  ↓ ④ tool.execute(onUpdate)     执行 + 流式进度（tool_execution_update 事件）
+  ↓ ⑤ afterToolCall              产品层后处理（可改 content/details/terminate/isError）
+  → FinalizedToolCallOutcome → toolResult 消息 + tool_execution_end
+任一 ①②③ 失败 → ImmediateToolCallOutcome（不执行工具，直接产出错误 toolResult）
+```
+
+**成败用判别联合承载**（这是结构与教学版的关键不同）：
 
 ```ts
-// agent/src/types.ts —— 替换现有 AgentToolResult / AgentTool 部分
+type PreparedToolCall           = { kind: "prepared";  toolCall: ToolCall; tool: AgentTool; args: unknown };
+type ImmediateToolCallOutcome   = { kind: "immediate"; result: AgentToolResult; isError: boolean };
+type ExecutedToolCallOutcome    = { result: AgentToolResult; isError: boolean };
+type FinalizedToolCallOutcome   = { toolCall: ToolCall; result: AgentToolResult; isError: boolean };
+type FinalizedToolCallEntry     = FinalizedToolCallOutcome | (() => Promise<FinalizedToolCallOutcome>);  // 并行用
+type ExecutedToolCallBatch      = { messages: ToolResultMessage[]; terminate: boolean };
+```
 
+---
+
+#### ① 类型层（`packages/agent/src/types.ts`）
+
+工具侧增强：
+
+```ts
 export type ToolExecutionMode = "sequential" | "parallel";
 
 export interface AgentToolResult {
@@ -602,8 +627,8 @@ export type AgentToolUpdateCallback = (partialResult: AgentToolResult) => void;
 
 export interface AgentTool extends Tool {
     label: string;
-    prepareArguments?: (args: unknown) => Record<string, unknown>;
-    executionMode?: ToolExecutionMode;
+    prepareArguments?: (args: unknown) => Record<string, unknown>;  // 参数预处理钩子
+    executionMode?: ToolExecutionMode;                              // 按工具声明串/并行
     execute: (
         toolCallId: string,
         params: Record<string, unknown>,
@@ -613,119 +638,163 @@ export interface AgentTool extends Tool {
 }
 ```
 
-**验证**：`npm run typecheck` → exit 0。
-
-#### Step 2.2：五步管道（`packages/agent/src/agent-loop.ts`）
-
-把阶段一的 `executeToolCalls` 拆成生产式三函数（教学版先用 `Record<string, unknown>` 参数，TypeBox 留 TODO）：
+配置侧钩子（`AgentLoopConfig` 追加，产品层插拔点）：
 
 ```ts
-async function prepareToolCall(
-  currentContext: AgentContext,
-  assistantMessage: AssistantMessage,
-  toolCall: ToolCall,
-  config: AgentLoopConfig,
-  signal: AbortSignal | undefined,
-): Promise<{ tool: AgentTool; args: Record<string, unknown> } | { error: string }> {
-  const tool = currentContext.tools?.find((t) => t.name === toolCall.name);
-  if (!tool) return { error: `Tool ${toolCall.name} not found` };
+toolExecution?: ToolExecutionMode;   // 全局强制串/并行（或工具 executionMode 按名称声明）
+beforeToolCall?: (ctx: BeforeToolCallContext, signal?) => Promise<BeforeToolCallResult | undefined>;
+afterToolCall?:  (ctx: AfterToolCallContext,  signal?) => Promise<AfterToolCallResult | undefined>;
+// BeforeToolCallResult { block?, reason? }; AfterToolCallResult { content?, details?, terminate?, isError? } 均可选 override
+// 两个 Context 都带 { assistantMessage, toolCall, args, context }，after 额外带 { result, isError }
+```
 
-  // 第 1 步：prepareArguments（LLM 参数怪癖预处理）
-  const args = tool.prepareArguments
-    ? (tool.prepareArguments(toolCall.arguments) as Record<string, unknown>)
-    : toolCall.arguments;
+---
 
-  // 第 2 步：validateToolArguments（教学版最小校验；生产用 TypeBox Value.Convert + Check）
-  if (args === null || typeof args !== "object") {
-    return { error: `Invalid arguments for tool ${toolCall.name}` };
-  }
+#### ② TypeBox 校验（`packages/ai/src/utils/validation.ts`）
 
-  // 第 3 步：beforeToolCall（产品层权限钩子）
-  if (config.beforeToolCall) {
-    const decision = await config.beforeToolCall(toolCall, args);
-    if (decision?.block) {
-      return { error: decision.reason ?? "Tool execution was blocked" };
+- 依赖 **`@sinclair/typebox`**（直用包名；生产 `import { Type } from "typebox"` 是它的路径别名）。
+- **前提：工具的 `parameters` 必须是 TypeBox schema**（`Type.Object(...)`）。裸 JSON 对象会被拒（`Value.Check` 不认——`onUpdate` 用例踩过）。
+- **契约：成功返回扁平 args；失败 `throw`**（对齐「失败即抛」约定，由 `prepareToolCall` 的 catch 接住）。
+
+```ts
+import { Value } from "@sinclair/typebox/value";
+
+export function validateToolArguments(tool: Tool, toolCall: ToolCall): any {
+    const args = structuredClone(toolCall.arguments);
+    const schema = tool.parameters as Record<string, unknown>;
+    const converted = Value.Convert(schema as any, args);                       // 字符串化数字/数组 → 真类型
+    if (!Value.Check(schema as any, converted)) {
+        const first = Value.Errors(schema as any, converted).First();
+        throw new Error(`Invalid arguments for tool ${tool.name}: ${first?.message ?? "unknown"}`);
     }
-  }
-  if (signal?.aborted) return { error: "Operation aborted" };
-
-  return { tool, args };
-}
-
-async function executeToolCall(
-  prepared: { tool: AgentTool; args: Record<string, unknown> },
-  toolCall: ToolCall,
-  signal: AbortSignal | undefined,
-  stream: EventStream<AgentEvent, AgentMessage[]>,
-): Promise<{ result: AgentToolResult; isError: boolean }> {
-  // 第 4 步：tool.execute（onUpdate 转发成 tool_execution_update）
-  try {
-    const result = await prepared.tool.execute(
-      toolCall.id, prepared.args, signal,
-      (partialResult) => {
-        stream.push({ type: "tool_execution_update", toolCallId: toolCall.id, toolName: toolCall.name, args: toolCall.arguments, partialResult });
-      },
-    );
-    return { result, isError: false };
-  } catch (error) {
-    return {
-      result: createErrorToolResult(error instanceof Error ? error.message : String(error)),
-      isError: true,
-    };
-  }
-}
-
-async function finalizeToolCall(
-  result: AgentToolResult, isError: boolean, toolCall: ToolCall, config: AgentLoopConfig,
-): Promise<AgentToolResult> {
-  // 第 5 步：afterToolCall（产品层后处理，可改 content/details/isError）
-  if (config.afterToolCall) {
-    const override = await config.afterToolCall(toolCall, result, isError);
-    if (override) {
-      return {
-        content: override.content ?? result.content,
-        details: override.details ?? result.details,
-        terminate: override.terminate ?? result.terminate,
-      };
-    }
-  }
-  return result;
+    return converted;
 }
 ```
 
-**验证**：`npm run typecheck` → exit 0。
+工具侧 schema 样板见 Step 1.1 各工具（`ReadSchema` / `WriteSchema` / `LsSchema` / `EditSchema`，均带中文 description 供 LLM 参考）。
 
-#### Step 2.3：串行/并行驱动（`packages/agent/src/agent-loop.ts`）
+---
 
-把阶段一的 `executeToolCalls` 改为「先判断模式再分派」：
+#### ③ 管道本体（`agent-loop.ts` 四函数）
+
+**`prepareToolCallArguments`**（①，独立 wrapper，对齐生产 `prepareToolCallArguments`）：
 
 ```ts
-async function executeToolCalls(
-  currentContext: AgentContext,
-  assistantMessage: AssistantMessage,
-  config: AgentLoopConfig,
-  signal: AbortSignal | undefined,
-  stream: EventStream<AgentEvent, AgentMessage[]>,
-): Promise<ToolResultMessage[]> {
-  const toolCalls = assistantMessage.content.filter((c): c is ToolCall => c.type === "toolCall");
-  const hasSequential = toolCalls.some(
-    (tc) => currentContext.tools?.find((t) => t.name === tc.name)?.executionMode === "sequential",
-  );
-  if (config.toolExecution === "sequential" || hasSequential) {
-    return executeToolCallsSequential(currentContext, assistantMessage, toolCalls, config, signal, stream);
-  }
-  return executeToolCallsParallel(currentContext, assistantMessage, toolCalls, config, signal, stream);
+function prepareToolCallArguments(tool: AgentTool, toolCall: ToolCall): ToolCall {
+    if (!tool.prepareArguments) return toolCall;                  // 无垫片 → 零成本
+    const prepared = tool.prepareArguments(toolCall.arguments);
+    if (prepared === toolCall.arguments) return toolCall;         // 同一引用 → 不新建
+    return { ...toolCall, arguments: prepared as Record<string, unknown> };
 }
 ```
 
-- **串行函数**（`executeToolCallsSequential`）：对每个 toolCall 依次走 Step 2.2 的 `prepareToolCall → executeToolCall → finalizeToolCall`，产出 `tool_execution_start/update/end` + `toolResult` 消息（即把阶段一 Step 1.3 的循环体换成管道三函数）。
-- **并行函数**（`executeToolCallsParallel`）：`Promise.all(toolCalls.map(async (tc) => { ... 管道三函数 ... }))`，最后按原顺序汇总。**作为练习**。
+**`prepareToolCall`**（①+②+③；任一失败 → immediate，不进入 execute）：
 
-**验证**：`npm run typecheck` → exit 0。
+```ts
+async function prepareToolCall(...): Promise<PreparedToolCall | ImmediateToolCallOutcome> {
+    const tool = currentAgentContext.tools?.find(t => t.name === toolCall.name);
+    if (!tool) return immediate(`Tool ${toolCall.name} not found`);
+    try {
+        const preparedToolCall = prepareToolCallArguments(tool, toolCall);   // ① 参数预处理
+        const validatedArgs = validateToolArguments(tool, preparedToolCall); // ② 校验失败 THROW → catch
+        if (config.beforeToolCall) {                                         // ③ 产品层权限钩子
+            const d = await config.beforeToolCall({ assistantMessage, toolCall, args: validatedArgs, context }, signal);
+            if (d?.block) return immediate(d.reason || "Tool execution was blocked");
+        }
+        if (signal?.aborted) return immediate("Operation aborted");
+        return { kind: "prepared", toolCall, tool, args: validatedArgs };
+    } catch (error) {
+        return immediate(error instanceof Error ? error.message : String(error));
+    }
+}
+```
 
-#### Step 2.4：集成测试用例 2
+> 一条 catch 同时兜住「校验失败」和「beforeToolCall 抛错」——这正是 validate 用 **throw** 而非 `{ error }` 环形返回的原因。
 
-见「三、集成测试用例 · 用例 2」。
+**`executePreparedToolCall`**（④，onUpdate 转发 + 守卫）：
+
+```ts
+async function executePreparedToolCall(prepared, signal, stream): Promise<ExecutedToolCallOutcome> {
+    let acceptingUpdates = true;                       // 工具 resolve 后不再收 onUpdate
+    const updateEvents: Promise<void>[] = [];
+    try {
+        const result = await prepared.tool.execute(prepared.toolCall.id, prepared.args as never, signal,
+            (partialResult) => {
+                if (!acceptingUpdates) return;
+                updateEvents.push(Promise.resolve(
+                    stream.push({ type: "tool_execution_update", toolCallId: prepared.toolCall.id, toolName: prepared.toolCall.name, args: prepared.toolCall.arguments, partialResult })
+                ));
+            });
+        acceptingUpdates = false;
+        await Promise.all(updateEvents);               // 事件先落盘再收尾
+        return { result, isError: false };
+    } catch (error) {
+        acceptingUpdates = false;
+        await Promise.all(updateEvents);
+        return { result: createErrorToolResult(msg(error)), isError: true };
+    } finally { acceptingUpdates = false; }
+}
+```
+
+**`finalizeExecutedToolCall`**（⑤，afterToolCall override）：
+
+```ts
+async function finalizeExecutedToolCall(...): Promise<FinalizedToolCallOutcome> {
+    let result = executed.result, isError = executed.isError;
+    if (config.afterToolCall) {
+        try {
+            const o = await config.afterToolCall({ assistantMessage, toolCall: prepared.toolCall, args: prepared.args, result, isError, context }, signal);
+            if (o) {
+                result  = { content: o.content ?? result.content, details: o.details ?? result.details, terminate: o.terminate ?? result.terminate };
+                isError = o.isError ?? isError;
+            }
+        } catch (error) { result = createErrorToolResult(msg(error)); isError = true; }
+    }
+    return { toolCall: prepared.toolCall, result, isError };
+}
+```
+
+---
+
+#### ④ 串行 vs 并行（`excuteToolCalls` 分派）
+
+```ts
+async function excuteToolCalls(...): Promise<ExecutedToolCallBatch> {
+    const toolCalls = assistantMessage.content.filter(c => c.type === "toolCall");
+    const hasSequentialToolCall = toolCalls.some(tc =>
+        currentContext.tools?.find(t => t.name === tc.name)?.executionMode === "sequential");
+    if (hasSequentialToolCall || config.toolExecution === "sequential")
+        return executeToolCallsSequential(...);
+    return executeToolCallsParallel(...);
+}
+```
+
+- **串行** `executeToolCallsSequential`：逐个 `prepare → execute → finalize`，`tool_execution_start/update/end` + toolResult 消息按顺序；`signal?.aborted` 中断。
+- **并行** `executeToolCallsParallel`：**两条模式都已实现**（不是练习）——按序 prepare（immediate 直接产出 / prepared 进异步闭包），`Promise.all` 并发执行；**`tool_execution_end` 按完成顺序**、**toolResult 消息按 assistant 原序**汇总（`FinalizedToolCallEntry` 闭包 + `orderedFinalizedCalls`）。
+- **终止语义** `shouldTerminateToolBatch`：整批**所有**结果都 `terminate === true` 才为 true。
+
+---
+
+#### ⑤ runLoop 集成（工程化收尾）
+
+- **续轮语义**：`hasMoreToolCalls = !executedToolBatch.terminate`——工具轮后继续出「最终回答」，只有全部 `terminate` 才停。
+- **queued 消息简化**：删掉旧的 `queuedAfterTools` 通道（阶段一的 `excuteToolCalls` 曾返回 `queuedMessages`，新返回形态不带），每轮末统一 `queuedMessages = (await config.getQueuedMessages?.()) || []`。
+- **agent_end / stream.end 移出 while 循环**：循环自然结束后统一触发一次；error/aborted 分支发 events 后 `return`（不再双重 end）。
+
+---
+
+#### ⑥ 验收测试（用例 2，✅ 已落地 → 15/15）
+
+`packages/agent/test/tool-loop.test.ts` 新增 `describe("五步管道 —— 阶段二")` 4 条断言：
+
+| 用例 | 断言 |
+|---|---|
+| beforeToolCall 拦截 | toolResult `isError` 且内容含 reason「危险命令」 |
+| afterToolCall 改写 | `messageText(toolResult)` === 「改写结果」 |
+| onUpdate → 流式进度 | 收集到 **2 次** `tool_execution_update` |
+| prepareArguments 规范化 | legacy `{oldText,newText}` 折叠进 `edits[]`；字符串化 `edits` 解析回数组 |
+
+> 坑：用例 3 的测试工具 `parameters` 必须是 **TypeBox schema**——裸 JSON 对象会被 `validateToolArguments` 拒，工具不执行、onUpdate 永不触发（调试实测）。
 
 ---
 
@@ -800,9 +869,9 @@ turn2: assistant 最终回答（含 agent-notes.md 内容摘要）
 
 ---
 
-### 用例 2（阶段二验收）：五步管道行为
+### 用例 2（阶段二验收）：五步管道行为（✅ 已落地）
 
-在 `packages/agent/test/tool-loop.test.ts` 追加 `describe("五步管道 —— 阶段二")`：
+已写入 `packages/agent/test/tool-loop.test.ts` 的 `describe("五步管道 —— 阶段二")`（beforeToolCall 拦截 / afterToolCall 改写 / onUpdate 流式进度 / prepareArguments 规范化 4 条，15/15 全过）。注意 onUpdate 用例的工具 `parameters` 必须用 **TypeBox schema**，裸 JSON 对象会被 `validateToolArguments` 拒。参考代码：
 
 ```ts
 import { messageText } from "pi-ai";

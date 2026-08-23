@@ -2,7 +2,14 @@ import { mkdir as fsMkdir, writeFile as fsWriteFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { text } from "pi-ai";
 import type { AgentTool } from "pi-agent-core";
+import { type Static, Type } from "@sinclair/typebox";
 import { WORKSPACE_ROOT } from "../utils/paths.ts";
+
+const WriteSchema = Type.Object({
+  path: Type.String({ description: "要写入的文件路径（相对工作区的路径，父目录会自动创建）。" }),
+  content: Type.String({ description: "要写入的完整文件内容。" }),
+});
+type WriteInput = Static<typeof WriteSchema>;
 
 export interface WriteOperations {
     writeFile: (path: string, content: string) => Promise<void>;
@@ -22,16 +29,9 @@ export function createWriteTool(
         name : "write_note",   // ⚠️ 必须与 mock 的 toolCall.name 一致，见下
         label : "写入文件",
         description : "写入文件内容，自动创建父目录。",
-        parameters : {
-            type : "object",
-            properties : {
-                path : {type : "string"},
-                content : {type : "string"},
-            },
-        },
+        parameters: WriteSchema as Record<string, unknown>,
         execute: async(_toolCallId, params) => {
-            const path = params.path as string;
-            const content = params.content as string;
+            const { path, content } = params as WriteInput;
 
             // ① 路径安全：解析 + 阻止逃逸出 workspace（写工具最危险的洞）
             const absolutePath = resolve(workspaceRoot, path);

@@ -3,11 +3,18 @@ import { readdir as fsReaddir, stat as fsStat } from "node:fs/promises";
 import { join } from "node:path";
 import { text } from "pi-ai";
 import type { AgentTool } from "pi-agent-core";
+import { type Static, Type } from "@sinclair/typebox";
 import { WORKSPACE_ROOT } from "../utils/paths.ts";
 
 
 
 const DEFAULT_LIMIT = 500;
+
+const LsSchema = Type.Object({
+  path: Type.Optional(Type.String({ description: "要列出的目录路径，缺省为当前目录（工作区根）。" })),
+  limit: Type.Optional(Type.Number({ description: "最多返回的目录条目数，缺省 500。" })),
+});
+type LsInput = Static<typeof LsSchema>;
 
 export interface LsOperations {
     exists: (path: string) => Promise<boolean>;
@@ -34,11 +41,12 @@ export function createLsTool(
         name: "list_files",
         label: "列出文件",
         description: "列出目录内容,目录名带 / 后缀,默认最多 500 条。",
-        parameters: { type: "object", properties: { path: { type: "string" }, limit: {type: "number"} } },
+        parameters: LsSchema as Record<string, unknown>,
         execute: async (_toolCallId, params) => {
+            const { path, limit } = params as LsInput;
 
             // ① 解析路径,缺省 "."
-            const dirPath = join(workspaceRoot, (params.path as string || "."));
+            const dirPath = join(workspaceRoot, path || ".");
 
             // ② 存在性检查
             if (!(await ops.exists(dirPath))) {
@@ -56,7 +64,7 @@ export function createLsTool(
             entries = entries.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase())); // 大小写不敏感排序
 
             // ⑤ 截断
-            const effectiveLimit = (params.limit as number) ?? DEFAULT_LIMIT;       // ⑤ 截断
+            const effectiveLimit = limit ?? DEFAULT_LIMIT;       // ⑤ 截断
             const results: string[] = [];
             let entryLimitReached = 0;
             for (const entry of entries) {
