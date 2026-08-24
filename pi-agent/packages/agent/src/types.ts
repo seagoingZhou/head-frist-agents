@@ -10,10 +10,10 @@ import type {
     AssistantMessageEventStream,
     AssistantMessageEvent,
     SimpleStreamOptions,
-    TextContent
+    TextContent,
+	streamSimple
 
 } from "pi-ai";
-import { streamSimple } from "../../ai/src/stream";
 
 /**
    * 控制单条 assistant 消息内多个工具调用的执行方式。
@@ -34,7 +34,6 @@ export type StreamFn = (
     ...args: Parameters<typeof streamSimple>
 ) => ReturnType<typeof streamSimple> | Promise<ReturnType<typeof streamSimple>>;
 
-export type AgentEventSink = (event: AgentEvent) => Promise<void> | void;
 
 /**
  * 可扩展的自定义应用消息接口。

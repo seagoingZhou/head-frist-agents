@@ -28,7 +28,7 @@
 |---|---|---|
 | `agent/src/types.ts` | `AgentEvent` **已有 10 种生命周期事件**(agent/turn/message/tool_execution 各 start/update/end 配对 + compaction)——**事件源就绪** | 无 |
 | `agent/src/types.ts:23` | `AgentEventSink = (event) => Promise<void> \| void` **已有**(emit 签名) | 无 |
-| `agent/src/agent-loop.ts` | 事件全部 `stream.push(event)` 进 `EventStream`(拉取式输出) | 加**管道 A 的 push 订阅** + **管道 B 的 await 派发** |
+| `agent/src/agent-loop.ts` | **已重构为 `emit: AgentEventSink` 注入**:agentLoop 默认 emit=`stream.push`;新增 `runAgentLoop(prompts, ctx, config, emit)` 可由调用方注入自定义 emit | 管道 B 的 await 派发 + 两管分叉 emit 落点 |
 | `agent` | 无 `Agent` 类 / `listeners Set` / `processEvents` | ●(教学版改用 EventStream + emitter 达成"等/不等") |
 | `coding-agent` | 无 session 层、无扩展 runner | ✳ 新建 `core/extensions/runner.ts`(最小版)+ 事件桥 |
 | 决策钩子 | **已有** `beforeToolCall`(tool_call 拦)、`afterToolCall`(tool_result 改)、`transformContext`(context 改) | 管道 B 决策事件直接挂在它们上 |
@@ -72,20 +72,37 @@ unsubscribe();     // 注销
 
 签名 `(event: AgentEvent) => void` —— **返回 void**:你 return 什么 Agent 都不读。类型层面就写死"只能看"。
 
-### 4.2 在我们 repo 的落点：EventStream 是主通道,subscribe 是 push 旁路
+### 4.2 在我们 repo 的落点：emit 注入版（✅ 已落地）
 
-教学版没有 `Agent` 类,`agentLoop()` 已返回 `EventStream<AgentEvent, AgentMessage[]>`(拉取式,消费方 `for await`)。管道 A 补两件事:
-
-1. **保留 EventStream 为拉取通道**(消费者 `for await` / `result()`)。
-2. **加 push 订阅**:`AgentLoopConfig` 增可选 `eventSink?: AgentEventSink`;loop 每次事件先 `stream.push(event)`(进拉取通道),再 `eventSink?.(event)`(**不等**、`void` 丢弃、`try/catch` 兜在调用方)——这就是管道 A。
+教学版没有 `Agent` 类。`agentLoop()` 本来返回 `EventStream`(拉取式,消费方 `for await`),事件靠每个 push 点 `stream.push(event)`。**重构后事件统一走一个注入的 `emit: AgentEventSink`**:
 
 ```ts
-// agent-loop.ts —— 每个 push 点旁（不等）
-stream.push(event);
-try { config.eventSink?.(event); } catch {}   // 管道 A：返回丢弃，不见 await
+// agentLoop：默认 emit 把事件推给 EventStream（拉取通道，向后兼容）
+export function agentLoop(prompts, context, config, signal?, streamFn?) {
+    const eventStream = createAgentStream();
+    void runAgentLoop(prompts, context, config,
+        (event) => eventStream.push(event),        // ← 默认 emit = push
+        signal, streamFn).then((msg) => eventStream.end(msg));
+    return eventStream;
+}
+
+// runAgentLoop：事件源 + 返回值，emit 由调用方注入
+export async function runAgentLoop(prompts, context, config, emit, signal?, streamFn?): Promise<AgentMessage[]> {
+    ... await emit({ type: "agent_start" }) ...   // 每个事件 await emit(event)
+}
 ```
 
-> "不等"立住:**把 eventSink 放在 `async` loop 里但不 `await` 它的返回**,listener 里干重活不拖慢 Agent。
+- **默认路径保持拉取**:`agentLoop()` 用 `emit = e => stream.push(e)`,`for await` / `result()` 照旧。
+- **外部观察者走注入**:任何调用方 `await runAgentLoop(prompts, ctx, config, myEmit)`——`myEmit` 自选要不要 `await`、要不要分流,loop 不解耦消费者。
+- "不等"由 sink 决定:**loop 一律 `await emit(event)`(同步屏障),sink 内部对管道 A 监听器"同步调、不 await、丢返回值"**,就是"不等"。
+
+```ts
+// 两管分叉 emit（这就是"等 B、不等 A"的落点，等价生产 _handleAgentEvent:619/622）
+async function myEmit(event) {
+    await pipeB(event);                   // ① 等扩展（管道 B）
+    for (const l of aListeners) l(event); // ② 不等：同步调、返回丢弃（管道 A）
+}
+```
 
 ### 4.3 管道 A 能收到的事件
 
@@ -159,21 +176,22 @@ async emitToolCall(event): Promise<ToolCallEventResult | undefined> {
 
 ### 5.4 通知型事件到管道 B
 
-10 种生命周期事件经 runner `emit`(路径 1)也喂给扩展(翻译版,await)。loop 的 `eventSink` 处:`await runner.emit(event)`(**等 B**)→ 再 `eventSink?.(event)`(不等 A)。这就是 `_handleAgentEvent` 的分叉。
+10 种生命周期事件经 runner `emit`(路径 1)也喂给扩展(翻译版,await)。两管分叉的 `emit` 实现:`await runner.emit(event)`(**等 B**)→ 再同步通知 subscribe 监听器(**不等 A**)。这就是 `_handleAgentEvent` 的分叉(见 §六)。
 
 ---
 
 ## 六、分叉点：`_handleAgentEvent` 等价(两管在同一个事件上分流)
 
 ```ts
-// agent-loop 里 emit 一个事件时：
-async function emitEvent(emitter, event) {
+// 一次"等 B + 不等 A"的两管分叉 emit（== 生产 _handleAgentEvent:619/622）
+async function twoPipeEmit(event) {
     // ① 管道 B：等扩展（通知型 await / 决策型读返回值）
-    await emitter.emitExtensionEvent(event);   // == 生产 agent-session.ts:619
-    // ② 管道 A：不等
-    stream.push(event);
-    try { config.eventSink?.(event); } catch {} // == 生产 _emit:622
+    await emitter.emitExtensionEvent(event);          // == 619
+    // ② 管道 A：不等——同步调、返回丢弃、try/catch 隔离在监听器侧
+    for (const l of sessionListeners) { l(event); }   // == _emit:622
 }
+// loop 每个事件点：await twoPipeEmit(event)
+// 分叉全在 sink 里——loop 只认一个 emit（生产 Agent 的 EventSink 同理）
 ```
 
 - 决策事件(tool_call/context/tool_result)不在这个循环里——它们在已有钩子里 await,见 5.3。
@@ -183,10 +201,10 @@ async function emitEvent(emitter, event) {
 
 ## 七、实战：两条管道各一例
 
-**管道 A——日志**:
+**管道 A——日志（走注入 emit）**:
 ```ts
-const stream = agentLoop(prompts, ctx, { model: mockModel, convertToLlm: (m) => m as Message[],
-  eventSink: (e) => { if (e.type === "tool_execution_end") console.log(`[LOG] ${e.toolName} ${e.isError ? "失败" : "成功"}`); } });
+await runAgentLoop(prompts, ctx, { model: mockModel, convertToLlm: (m) => m as Message[] },
+  (e) => { if (e.type === "tool_execution_end") console.log(`[LOG] ${e.toolName} ${e.isError ? "失败" : "成功"}`); });
 ```
 **管道 B——拦截 delete_table**:
 ```ts
@@ -194,7 +212,7 @@ function guard(pi) { pi.on("tool_call", async (e) => e.toolName === "delete_tabl
 // beforeToolCall 里 await emitter.emitToolCall(...) → block → isError toolResult
 ```
 
-**选管道一句话**:你的代码要不要改 Agent 行为——要,走 B(pi.on);不要,走 A(subscribe/eventSink)。
+**选管道一句话**:你的代码要不要改 Agent 行为——要,走 B(pi.on);不要,走 A(subscribe / 在 emit 里只读)。
 
 ---
 
@@ -202,25 +220,25 @@ function guard(pi) { pi.on("tool_call", async (e) => e.toolName === "delete_tabl
 
 | 用例 | 断言 |
 |---|---|
-| 管道 A：eventSink 收到 10 种事件 | 跑一次 mock 文本循环,eventSink 里收集 `agent_start/turn_start/message_*/turn_end/agent_end` ≥ 覆盖 |
-| 管道 A 不等 | eventSink 里 `await` 一个延迟,断言 Agent 总耗时**不**因此变长(时序口径:事件顺序完整即可) |
+| 管道 A：emit 收到 10 种事件 | 跑一次 mock 文本循环,自定义 emit 里收集 `agent_start/turn_start/message_*/turn_end/agent_end` ≥ 覆盖 |
+| 管道 A 不等 / 管道 B 等 | emit 分叉：管道 B handler `await` 延迟 → run 完成耗时 **计入**;管道 A 监听器延迟 → **不计入** |
 | 管道 B：tool_call 拦截 | 扩展 `tool_call` return block → toolResult isError 含 reason,工具不执行 |
 | 管道 B：context 改写 | `context` 里注入一条 user 消息 → LLM 收到(断言 mock 回复变化 / convertToLlm 输入) |
 | 管道 B 通知型隔离 | 某 handler 抛错 → 其余 handler 仍执行、循环不崩 |
-| tool_call 独占比对 | `subscribe`/eventSink **收不到** `tool_call`(两种管道事件集合不同) |
+| tool_call 独占比对 | subscribe / 管道 A 监听器 **收不到** `tool_call`(两种管道事件集合不同) |
 
-**现有 15+6=21 测试不回归**:改造只在 loop 内加 emit/eventSink/runner,不改既有 EventStream 语义、不改工具/消息类型。
+**现有 21 测试不回归**:重构只把 `stream.push(event)` 换成 **注入 `emit`**(默认 emit→push,EventStream 语义不变),不改工具/消息类型。
 
 ---
 
 ## 九、实施步骤(分 Tier)
 
 **Tier 1：管道 A + 管道 B 决策点(推荐先做这颗)**
-1. `agent/types.ts`:无新事件类型;确认 `AgentEventSink` 已导出。
-2. `agent-loop.ts`:加 `emitEvent` 封装——`stream.push` 后 `try { config.eventSink?.(event) } catch {}`;`AgentLoopConfig` 增 `eventSink?`。
-3. `coding-agent/src/core/extensions/runner.ts`(新建):`ExtensionAPI`(`on`) + `ExtensionRunner`(`emit` 通知型 / `emitToolCall` 决策型 / `emitContext` 链式 / `emitError`)。
-4. 桥:在 `agentLoop` 调用处用一个 adapter,把 runner 的 `tool_call` → `beforeToolCall`、`tool_result` → `afterToolCall`、`context` → `transformContext` 接上(测试里直接构造)。
-5. 测试 event-system.test.ts 六条。
+1. ✅ `agent/types.ts`:无新事件类型;`AgentEventSink` 已导出。
+2. ✅ `agent-loop.ts`:已重构为 **emit 注入版**——`agentLoop` 默认 `emit = e => stream.push(e)`;`runAgentLoop(..., emit)` 可注入自定义 emit。
+3. ⏳ `coding-agent/src/core/extensions/runner.ts`(新建):`ExtensionAPI`(`on`) + `ExtensionRunner`(`emit` 通知型 / `emitToolCall` 决策型 / `emitContext` 链式 / `emitError`)。
+4. ⏳ 桥:把 runner 的 `tool_call` / `tool_result` / `context` 接到已有 `beforeToolCall` / `afterToolCall` / `transformContext`;用一个两管分叉的 emit 喂给 `runAgentLoop`(测试里直接构造)。
+5. ⏳ 测试 event-system.test.ts(两管分叉 emit / 等 vs 不等 / 拦截 / 改写)。
 
 **Tier 2(后续)**:`input`/`before_agent_start` 决策点、产品级 session 事件、`tool_execution_update` 攒批、真实 session/扩展 loader(从工厂数组挂载,对齐 `DefaultResourceLoader`)。
 
@@ -230,8 +248,8 @@ function guard(pi) { pi.on("tool_call", async (e) => e.toolName === "delete_tabl
 
 | 坑 | 症状 | 解法 |
 |---|---|---|
-| 在 eventSink 里 return 想拦 | 拦不住 | 管道 A 返回值丢弃;拦截必须走管道 B |
-| async eventSink 里 await 失败 | 错误被静默吞 | 管道 A 自己 try-catch(Agent 不兜) |
-| 把 `tool_call` 写进 eventSink | 分支永不命中 | `tool_call` 是管道 B 独占,管道 A 收不到 |
+| 在管道 A 监听器里 return 想拦 | 拦不住 | 管道 A 返回值丢弃;拦截必须走管道 B |
+| async 管道 A 监听器里 await 失败 | 错误被静默吞 | 管道 A 自己 try-catch(Agent 不兜) |
+| 把 `tool_call` 写进管道 A 监听器 | 分支永不命中 | `tool_call` 是管道 B 独占,管道 A 收不到 |
 | 重活放 beforeToolCall 日志 | Agent 卡 | `beforeToolCall` 是决策钩子,会被 await——日志走管道 A |
 | handler 抛错中断其它 handler | 一个崩全崩 | 通知型用 try-catch 隔离;tool_call 故意不隔离(fail-closed) |
