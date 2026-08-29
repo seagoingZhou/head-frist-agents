@@ -6,6 +6,7 @@ import type { ToolDefinition } from "../core/types.ts";
 import { type Static, Type } from "@sinclair/typebox";
 import { WORKSPACE_ROOT } from "../utils/paths.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
+import { truncateHead } from "./truncate.ts";
 
 const ReadSchema = Type.Object({
   path: Type.String({ description: "要读取的文件路径（相对工作区的路径）。" }),
@@ -22,9 +23,16 @@ const defaultReadOperations: ReadOperations = {
   access: (path) => fsAccess(path),
 };
 
-/** details 里携带的信息（仿生产 read.ts:275：附加文件总行数） */
+/** details 里携带的信息（仿生产 read.ts:275：附加文件总行数；05 上下文工程加截断信息） */
 export interface ReadToolDetails {
+  /** 原始文件总行数 */
   totalFileLines: number;
+  /** 是否被截断（超 2000 行或 50KB，双限制先触者胜） */
+  truncated?: boolean;
+  /** 由哪个限制触发："lines" | "bytes" */
+  truncatedBy?: "lines" | "bytes" | null;
+  /** 截断后的输出行数 */
+  outputLines?: number;
 }
 
 /**
@@ -49,9 +57,20 @@ export function createReadToolDefinition(
       const absolute = join(workspaceRoot, path);
       await ops.access(absolute); // 存在性检查
       const content = await ops.readFile(absolute);
+      // 上下文工程"输入侧①减法"：read 保留开头（truncateHead，2000 行/50KB 双限制、UTF-8 安全）
+      const trunc = truncateHead(content);
+      // 截断是有损的但不偷偷干：追加逃生提示，告诉 LLM 只看了前 N 行、还剩多少
+      const output = trunc.truncated
+        ? `${trunc.content}\n\n[Showing first ${trunc.outputLines} of ${trunc.totalLines} lines. Output truncated.]`
+        : content;
       return {
-        content: [text(content)],
-        details: { totalFileLines: content.split("\n").length } satisfies ReadToolDetails,
+        content: [text(output)],
+        details: {
+          totalFileLines: trunc.totalLines,
+          truncated: trunc.truncated,
+          truncatedBy: trunc.truncatedBy,
+          outputLines: trunc.outputLines,
+        } satisfies ReadToolDetails,
       };
     },
   };

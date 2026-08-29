@@ -26,6 +26,7 @@
     "vitest": "^4.1.10"
   },
   "dependencies": {
-    "@sinclair/typebox": "^0.34.52"
+    "@sinclair/typebox": "^0.34.52",
+    "chalk": "^6.0.0"
   }
 }
