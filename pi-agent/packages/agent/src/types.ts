@@ -188,6 +188,13 @@ export interface AgentLoopConfig extends SimpleStreamOptions{
 }
 
 /**
+ * Thinking/reasoning level for models that support it.
+ * Note: "xhigh" is only supported by selected model families. Use model thinking-level metadata
+ * from @earendil-works/pi-ai to detect support for a concrete model.
+ */
+export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+
+/**
  * `beforeToolCall` 的返回结果。
  *
  * 返回 `{ block: true }` 会阻止工具执行，loop 改为发出错误工具结果。

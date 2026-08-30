@@ -88,8 +88,11 @@ describe("agent loop with mock model —— provider 分发（Level 2）", () =>
           {
             role: "assistant",
             content: [{ type: "text", text: "第一次回复" }],
+            api: "mock",
+            provider: "mock",
+            model: "mock",
             stopReason: "stop",
-            usage: { input: 0, output: 0, totalTokens: 0 },
+            usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
             timestamp: 0,
           },
         ],

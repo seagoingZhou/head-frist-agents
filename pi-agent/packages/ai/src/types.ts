@@ -40,8 +40,20 @@ export type KnownProvider =
 	| "zai"
 	| "mistral";
 export type Provider = KnownProvider | string;
+export type ProviderId = KnownProvider | string;
+
 
 export type TextContent = { type: "text"; text: string };
+
+export interface ThinkingContent {
+	type: "thinking";
+	thinking: string;
+	thinkingSignature?: string; // e.g., for OpenAI responses, the reasoning item ID
+	/** When true, the thinking content was redacted by safety filters. The opaque
+	 *  encrypted payload is stored in `thinkingSignature` so it can be passed back
+	 *  to the API for multi-turn continuity. */
+	redacted?: boolean;
+}
 
 export type ToolCall = {
   type: "toolCall";
@@ -53,7 +65,18 @@ export type ToolCall = {
 export type Usage = {
   input: number;
   output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  /** Subset of `cacheWrite` written with 1h retention. Only Anthropic reports this split. */
+  cacheWrite1h?: number;
   totalTokens: number;
+  cost: {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    total: number;
+  };
 };
 
 export type UserMessage = {
@@ -64,7 +87,10 @@ export type UserMessage = {
 
 export type AssistantMessage = {
   role: "assistant";
-  content: Array<TextContent | ToolCall>;
+  content: Array<TextContent | ToolCall | ThinkingContent>;
+  api: Api;
+	provider: ProviderId;
+  model: string;
   stopReason: "stop" | "toolUse" | "error" | "aborted";
   usage: Usage;
   timestamp: number;

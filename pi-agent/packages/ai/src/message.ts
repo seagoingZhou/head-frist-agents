@@ -1,9 +1,12 @@
 import type { Message, AssistantMessage, TextContent, ToolCall, UserMessage } from "pi-ai";
 
 const EMPTY_USAGE = {
-  input: 0,
-  output: 0,
-  totalTokens: 0,
+	input: 0,
+	output: 0,
+	cacheRead: 0,
+	cacheWrite: 0,
+	totalTokens: 0,
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 };
 
 
@@ -31,6 +34,9 @@ export function createAssistantMessage(
     return {
         role: "assistant",
         content,
+        api: "mock",
+		provider: "mock",
+		model: "mock",
         stopReason,
         usage: EMPTY_USAGE,
         timestamp: Date.now()

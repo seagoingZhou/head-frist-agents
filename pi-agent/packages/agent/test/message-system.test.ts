@@ -66,7 +66,7 @@ describe("消息系统 —— 内富外严（AgentMessage → Message）", () =>
   it("标准消息（user/assistant/toolResult）原样透传（同一引用）", () => {
     const standard: Message[] = [
       { role: "user", content: [{ type: "text", text: "hi" }], timestamp: 0 },
-      { role: "assistant", content: [{ type: "text", text: "reply" }], stopReason: "stop", usage: { input: 0, output: 0, totalTokens: 0 }, timestamp: 0 },
+      { role: "assistant", content: [{ type: "text", text: "reply" }], api: "mock", provider: "mock", model: "mock", stopReason: "stop", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, timestamp: 0 },
       { role: "toolResult", toolCallId: "c", toolName: "read", content: [{ type: "text", text: "res" }], isError: false, timestamp: 0 },
     ];
     const out = convertToLlm(standard);

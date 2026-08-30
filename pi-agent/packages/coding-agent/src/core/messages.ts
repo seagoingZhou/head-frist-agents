@@ -130,3 +130,43 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
         (m) => m !== undefined
     );
 }
+
+export function createBranchSummaryMessage(summary: string, fromId: string, timestamp: string): BranchSummaryMessage {
+	return {
+		role: "branchSummary",
+		summary,
+		fromId,
+		timestamp: new Date(timestamp).getTime(),
+	};
+}
+
+export function createCompactionSummaryMessage(
+	summary: string,
+	tokensBefore: number,
+	timestamp: string,
+): CompactionSummaryMessage {
+	return {
+		role: "compactionSummary",
+		summary: summary,
+		tokensBefore,
+		timestamp: new Date(timestamp).getTime(),
+	};
+}
+
+/** Convert CustomMessageEntry to AgentMessage format */
+export function createCustomMessage(
+	customType: string,
+	content: string | (TextContent )[],
+	display: boolean,
+	details: unknown | undefined,
+	timestamp: string,
+): CustomMessage {
+	return {
+		role: "custom",
+		customType,
+		content,
+		display,
+		details,
+		timestamp: new Date(timestamp).getTime(),
+	};
+}
