@@ -9,11 +9,13 @@ import {
 	createCustomMessage,
 } from "../messages.ts";
 import {
-	SUMMARIZATION_SYSTEM_PROMPT,
+	computeFileLists,
 	createFileOps,
 	extractFileOpsFromMessage,
-	serializeConversation,
 	type FileOperations,
+	formatFileOperations,
+	SUMMARIZATION_SYSTEM_PROMPT,
+	serializeConversation,
 } from "./utils.ts";
 
 // ============================================================================
@@ -59,7 +61,15 @@ function extractFileOperations(
 	return fileOps;
 }
 
-
+/** Result from compact() - SessionManager adds uuid/parentUuid when saving */
+export interface CompactionResult<T = unknown> {
+	summary: string;
+	firstKeptEntryId: string;
+	tokensBefore: number;
+	estimatedTokensAfter?: number;
+	/** Extension-specific data (e.g., ArtifactIndex, version markers for structured compaction) */
+	details?: T;
+}
 
 // ============================================================================
 // 类型
@@ -734,4 +744,168 @@ export async function generateSummary(
 		.join("\n");
 
 	return textContent;
+}
+
+// ============================================================================
+// Main compaction function
+// ============================================================================
+
+const TURN_PREFIX_SUMMARIZATION_PROMPT = `This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.
+
+Summarize the prefix to provide context for the retained suffix:
+
+## Original Request
+[What did the user ask for in this turn?]
+
+## Early Progress
+- [Key decisions and work done in the prefix]
+
+## Context for Suffix
+- [Information needed to understand the retained recent work]
+
+Be concise. Focus on what's needed to understand the kept suffix.`;
+
+/**
+ * Generate a summary for a turn prefix (when splitting a turn).
+ */
+async function generateTurnPrefixSummary(
+	messages: AgentMessage[],
+	model: Model<any>,
+	reserveTokens: number,
+	apiKey: string | undefined,
+	headers?: Record<string, string>,
+	env?: Record<string, string>,
+	signal?: AbortSignal,
+	thinkingLevel?: ThinkingLevel,
+	streamFn?: StreamFn,
+): Promise<string> {
+	const maxTokens = Math.min(
+		Math.floor(0.5 * reserveTokens),
+		model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
+	); // Smaller budget for turn prefix
+	const llmMessages = convertToLlm(messages);
+	const conversationText = serializeConversation(llmMessages);
+	const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
+	const summarizationMessages = [
+		{
+			role: "user" as const,
+			content: [{ type: "text" as const, text: promptText }],
+			timestamp: Date.now(),
+		},
+	];
+
+	const response = await completeSummarization(
+		model,
+		{ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages },
+		createSummarizationOptions(model, maxTokens, apiKey, headers, env, signal, thinkingLevel),
+		streamFn,
+	);
+
+	if (response.stopReason === "error") {
+		throw new Error(`Turn prefix summarization failed: ${response.errorMessage || "Unknown error"}`);
+	}
+
+	return response.content
+		.filter((c): c is { type: "text"; text: string } => c.type === "text")
+		.map((c) => c.text)
+		.join("\n");
+}
+
+/**
+ * Generate summaries for compaction using prepared data.
+ * Returns CompactionResult - SessionManager adds uuid/parentUuid when saving.
+ *
+ * @param preparation - Pre-calculated preparation from prepareCompaction()
+ * @param customInstructions - Optional custom focus for the summary
+ */
+export async function compact(
+	preparation: CompactionPreparation,
+	model: Model<any>,
+	apiKey: string | undefined,
+	headers?: Record<string, string>,
+	customInstructions?: string,
+	signal?: AbortSignal,
+	thinkingLevel?: ThinkingLevel,
+	streamFn?: StreamFn,
+	env?: Record<string, string>,
+): Promise<CompactionResult> {
+	const {
+		firstKeptEntryId,
+		messagesToSummarize,
+		turnPrefixMessages,
+		isSplitTurn,
+		tokensBefore,
+		previousSummary,
+		fileOps,
+		settings,
+	} = preparation;
+
+	// Generate summaries (can be parallel if both needed) and merge into one
+	let summary: string;
+
+	if (isSplitTurn && turnPrefixMessages.length > 0) {
+		// Generate both summaries in parallel
+		const [historyResult, turnPrefixResult] = await Promise.all([
+			messagesToSummarize.length > 0
+				? generateSummary(
+						messagesToSummarize,
+						model,
+						settings.reserveTokens,
+						apiKey,
+						headers,
+						signal,
+						customInstructions,
+						previousSummary,
+						thinkingLevel,
+						streamFn,
+						env,
+					)
+				: Promise.resolve("No prior history."),
+				generateTurnPrefixSummary(
+					turnPrefixMessages,
+					model,
+					settings.reserveTokens,
+					apiKey,
+					headers,
+					env,
+					signal,
+					thinkingLevel,
+					streamFn,
+				),
+			]	
+		);
+		// Merge into single summary
+		summary = `${historyResult}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult}`;
+	} else {
+		// Just generate history summary
+		summary = await generateSummary(
+			messagesToSummarize,
+			model,
+			settings.reserveTokens,
+			apiKey,
+			headers,
+			signal,
+			customInstructions,
+			previousSummary,
+			thinkingLevel,
+			streamFn,
+			env,
+		);
+	}
+
+	// Compute file lists and append to summary
+	const { readFiles, modifiedFiles } = computeFileLists(fileOps);
+	summary += formatFileOperations(readFiles, modifiedFiles);
+
+	if (!firstKeptEntryId) {
+		throw new Error("First kept entry has no UUID - session may need migration");
+	}
+
+	return {
+		summary,
+		firstKeptEntryId,
+		tokensBefore,
+		details: { readFiles, modifiedFiles } as CompactionDetails,
+	};
+	
 }

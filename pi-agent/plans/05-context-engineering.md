@@ -240,8 +240,8 @@ CompactionEntry { type:"compaction", summary, tokensBefore, firstKeptEntryId, de
 
 #### ⑦ 自动压缩集成（⏳ 走 04 的 emit）
 
-- 生产:agent-session 订阅 `agent_end` → `_checkCompaction`(agent-session.ts:979)→ `shouldCompact` → `compact()`;发 `compaction_start / compaction_end` 事件(管道 B,reason: "manual" | "threshold" | "overflow")供 UI 显示进度。
-- 我们:04 的 emit 在 `agent_end` 分支做等价决策(`await` = 生产同步屏障),产物进会话态,下一轮从 `[summary, ...recent]` 开跑(见 §十 Tier-2 阶段 B-6)。
+- 生产:agent-session 在 **agent_end 之后、下一轮 prompt 提交前**调 `_checkCompaction`(agent-session.ts:1079 注释写明该时机)→ `estimateContextTokens`(:1884)→ `shouldCompact`(:1901)→ `compact()`;发 **`compaction_start / compaction_end`(管道 A 产品事件 `AgentSessionEvent`,agent-session.ts:137/:141,reason: "manual"|"threshold"|"overflow")**供 session.subscribe 显示进度——**不是管道 B**;管道 B 另有 `session_before_compact`(可覆盖压缩参数)与 `session_compact`(带 compactionEntry)。
+- 我们:⚠️ **会话写入 + agent 集成不在当前实现**(不涉及会话管理,顺延会话层)。将来:04 的 emit 在 agent_end 分支等价决策(`await` 同步屏障)→ `appendCompaction` → `buildSessionContext` 置换,下一轮 `[summary, ...recent]`(见 §十 Tier-2 阶段 B-5/6)。
 
 #### ⑧ 设计精华
 
@@ -338,8 +338,8 @@ export function collectEntriesForBranchSummary(
 2. **`CompactionResult`**(生产 `compaction.ts:103`):按生产形态定义(含 `entry: CompactionEntry` 与 kept 信息)。**验证**:typecheck。
 3. **`TURN_PREFIX_SUMMARIZATION_PROMPT`**(生产 `compaction.ts:737`)+ turnPrefix 摘要生成(生产 :855 区域,`maxTokens = min(0.5 × reserveTokens, model.maxTokens)`、3 段格式 Request/Progress/Context)。**验证**:`prepareCompaction` 产出 `isSplitTurn=true` 时能生成前缀摘要。
 4. **`compact()`**(生产 `compaction.ts:759` 编排):`prepareCompaction → 无则 return undefined → generateSummary(主摘要)+ turnPrefix 并行(Promise.all,生产 :784-813)→ createCompactionSummaryMessage → 返回 CompactionResult`。**验证**:单测"切割+摘要 → 产物含 summary/tokensBefore/firstKeptEntryId"。
-5. **会话写入**:`compact()` 结果作为 `CompactionEntry` 追加(对齐 session-manager 形状);`buildSessionContext` 已支持重建(session-manager.ts:220 已用 `createCompactionSummaryMessage`)。**验证**:构造含 compaction entry 的路径 → buildSessionContext 出 `[CompactionSummaryMessage, ...kept]`。
-6. **agent 侧集成**:04 的 emit 在 `agent_end` 分支:`estimateContextTokens` → `shouldCompact` → `compact()`;产物写会话态;发 `compaction_start / compaction_end`(管道 B,reason "threshold")。**不再走 transformContext**。**验证**:端到端——两次 `runAgentLoop`,第二轮 context 以 `compactionSummary` 开头,`convertToLlm` 后 LLM 只见 `<summary>` user。
+5. **会话写入**:⚠️ **不在当前实现**——不涉及会话管理,顺延会话层。将来做:`compact()` 结果作为 `CompactionEntry` 追加(对齐 session-manager.ts:48 形状,`appendCompaction(summary, firstKeptEntryId, tokensBefore, details)`);`buildSessionContext` 已支持重建(session-manager.ts:220 用 `createCompactionSummaryMessage`)。**验证**:构造含 compaction entry 的路径 → buildSessionContext 出 `[CompactionSummaryMessage, ...kept]`(**可先行单测,不依赖会话层**)。
+6. **agent 侧集成**:⚠️ **不在当前实现**——顺延会话层。将来做:04 的 emit 在 agent_end 分支等价生产 `_checkCompaction`(`estimateContextTokens` → `shouldCompact` → `compact()`);发 **`compaction_start / compaction_end`(管道 A 产品事件,reason "threshold";管道 B 另有 session_before_compact / session_compact)**;产物 `appendCompaction` 写会话态。**不再走 transformContext**。**验证**(可先行端到端):两次 `runAgentLoop`,第二轮 context 以 `compactionSummary` 开头,`convertToLlm` 后 LLM 只见 `<summary>` user。
 7. **单测**:`findCutPoint`(尾部连续 toolResult 不切)/ `prepareCompaction`(isSplitTurn 判定)/ `generateSummary`(mock 出 6-section)/ 端到端(见上)。
 
 **Tier 3：④分支摘要(依赖 03;会话树后续)——对齐生产 `core/compaction/branch-summarization.ts`**

@@ -68,6 +68,23 @@ export function computeFileLists(fileOps: FileOperations): { readFiles: string[]
 	return { readFiles: readOnly, modifiedFiles };
 }
 
+
+/**
+ * Format file operations as XML tags for summary.
+ */
+export function formatFileOperations(readFiles: string[], modifiedFiles: string[]): string {
+	const sections: string[] = [];
+	if (readFiles.length > 0) {
+		sections.push(`<read-files>\n${readFiles.join("\n")}\n</read-files>`);
+	}
+	if (modifiedFiles.length > 0) {
+		sections.push(`<modified-files>\n${modifiedFiles.join("\n")}\n</modified-files>`);
+	}
+	if (sections.length === 0) return "";
+	return `\n\n${sections.join("\n\n")}`;
+}
+
+
 // ============================================================================
 // 对话序列化 + 摘要系统提示词(generateSummary 用)
 // ============================================================================
