@@ -499,7 +499,7 @@ export function prepareCompaction(
 		}
 	}
 
-let previousSummary: string | undefined;
+	let previousSummary: string | undefined;
 	let boundaryStart = 0;
 	if (prevCompactionIndex >= 0) {
 		const prevCompaction = pathEntries[prevCompactionIndex] as CompactionEntry;
@@ -650,7 +650,7 @@ function createSummarizationOptions(
 ): SimpleStreamOptions {
 	// 注:教学版 SimpleStreamOptions 只有 temperature/maxTokens/signal/apikey/reasoning,
 	// 没有生产的 headers/env/apiKey 字段,故此处不传它们(生产 createSummarizationOptions 有)。
-	const options: SimpleStreamOptions = { maxTokens, signal, apikey: apiKey };
+	const options: SimpleStreamOptions = { maxTokens, signal, apiKey: apiKey };
 	if (model.reasoning && thinkingLevel && thinkingLevel !== "off") {
 		options.reasoning = thinkingLevel;
 	}
@@ -848,31 +848,31 @@ export async function compact(
 		const [historyResult, turnPrefixResult] = await Promise.all([
 			messagesToSummarize.length > 0
 				? generateSummary(
-						messagesToSummarize,
-						model,
-						settings.reserveTokens,
-						apiKey,
-						headers,
-						signal,
-						customInstructions,
-						previousSummary,
-						thinkingLevel,
-						streamFn,
-						env,
-					)
-				: Promise.resolve("No prior history."),
-				generateTurnPrefixSummary(
-					turnPrefixMessages,
+					messagesToSummarize,
 					model,
 					settings.reserveTokens,
 					apiKey,
 					headers,
-					env,
 					signal,
+					customInstructions,
+					previousSummary,
 					thinkingLevel,
 					streamFn,
-				),
-			]	
+					env,
+				)
+				: Promise.resolve("No prior history."),
+			generateTurnPrefixSummary(
+				turnPrefixMessages,
+				model,
+				settings.reserveTokens,
+				apiKey,
+				headers,
+				env,
+				signal,
+				thinkingLevel,
+				streamFn,
+			),
+		]
 		);
 		// Merge into single summary
 		summary = `${historyResult}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult}`;
@@ -907,5 +907,5 @@ export async function compact(
 		tokensBefore,
 		details: { readFiles, modifiedFiles } as CompactionDetails,
 	};
-	
+
 }

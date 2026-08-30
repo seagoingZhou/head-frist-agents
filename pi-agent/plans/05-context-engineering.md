@@ -40,39 +40,49 @@
 
 ---
 
-## 二、现状清点(我们已有 vs 待建)
+## 二、现状清点(2026-08-30 核对代码,非计划时点)
 
-| 位置 | 现状 | 待建 |
+| 位置 | 现状 | 状态 |
 |---|---|---|
-| `01`、`02` 工具 | read 返回**全文**(无截断)、bash/find/grep 仍是接口桩 | read 接 `truncateHead`;bash 后补时接 `truncateTail`、grep 接 `truncateLine` |
-| 03 消息系统 | `CompactionSummaryMessage` / `BranchSummaryMessage` 类型 + convert 规则**已就位**(`coding-agent/core/messages.ts`) | 无需新类型——只差"谁去生产它们" |
-| 03 `transformContext` | loop 每轮调用前已执行(可注入) | ⚠️ 生产里它是扩展 `context` 事件(emitContext)的落点,**不是压缩入口** |
-| 04 事件系统 | `emit` 分叉、agent_end 可达(带 messages) | Compaction 触发点:**agent_end 分支**(必要) |
-| coding-agent `core/` | types/messages/tool-definition-wrapper | `tools/truncate.ts`、`system-prompt.ts`、`compaction/{index,compaction,branch-summarization,utils}.ts` |
-| 系统提示词 | 目前 loop 用 `context.systemPrompt` 字符串 | `buildSystemPrompt` 组装器(分层 + XML + Skills 清单 + date/cwd) |
+| `src/core/tools/truncate.ts` | `truncateHead`/`truncateTail`/`truncateLine` + `TruncationResult`(双限制先触者胜、逐码点 UTF-8 安全)已落地 | ✅ 5 例单测(见 §九) |
+| `src/core/tools/read.ts` | 已接 `truncateHead`(3 处引用),details 带截断信息,逃生提示 `[Showing first …]` | ✅ 2 例单测(集成) |
+| bash/grep/find | 仍是接口桩,未接 `truncateTail` / `truncateLine` | ⏳ |
+| `core/system-prompt.ts` + `resource-loader.ts` + `skills.ts` | `buildSystemPrompt` 分层 + `loadProjectContextFiles` 向上递归 + `formatSkillsForPrompt` 懒加载清单 已落地 | ✅ 4 例单测;⚠️ 仍 **0 消费者**(loop 用 `context.systemPrompt` 字符串) |
+| 03 消息系统 | `CompactionSummaryMessage` / `BranchSummaryMessage` 类型 + convert 规则已就位 | ✅ |
+| 04 事件系统 | `emit` 分叉、agent_end 可达 | ⏳ Compaction / 分支摘要的**触发集成**仍走 04(未接会话层,顺延) |
+| `core/compaction/{index,compaction,utils,branch-summarization}.ts` | Tier-2 阶段 A **+ 阶段 B 全落地**(`compact()`/`TURN_PREFIX_SUMMARIZATION_PROMPT`+并行/`formatFileOperations`/`computeFileLists`) | ✅ 20 例测试全绿 |
+| `core/session-manager.ts` | `buildSessionContext`(重建 compaction/branch_summary)+ 纯函数 `getBranchPath`/`getEntryById` | ✅ |
+| 测试 | 全仓 **8 文件 54 例**(compaction.test.ts 20 + context-engine.test.ts 11 + 其余既有) | ✅ Tier-1 欠账已清偿 |
 
 ---
 
 ## 三、目标结构
 
 ```
-packages/coding-agent/src/core/
-  tools/truncate.ts         ★ 新建：DEFAULT_MAX_LINES/BYTES + truncateHead/Tail/Line + TruncationResult
-  system-prompt.ts          ★ 新建：buildSystemPrompt + project-context 向上递归 + skills 清单
-  compaction/
-    index.ts                 ★ 新建：export * 三件（对齐生产 index.ts）
-    compaction.ts            ★：shouldCompact / findCutPoint / prepareCompaction / generateSummary / compact
-    branch-summarization.ts  ★：collectEntriesForBranchSummary(LCA) + prepareBranchEntries + generateBranchSummary
-    utils.ts                 ★：序列化等工具（对齐生产 utils.ts）
-  index.ts                  ★ 改：追加以上导出
+packages/coding-agent/src/
+  core/tools/truncate.ts ✅     DEFAULT_MAX_LINES/BYTES + truncateHead/Tail/Line + TruncationResult
+  core/tools/read.ts ✅         已接 truncateHead + 逃生提示(details 带截断信息)
+  (bash/edit/find/grep/ls/write/path-utils/tool-definition-wrapper 也一并迁到 core/tools/) ✅
+  core/system-prompt.ts ✅     buildSystemPrompt + project-context + skills 清单
+  core/resource-loader.ts ✅   loadProjectContextFiles(向上递归收集 CLAUDE.md)
+  core/skills.ts ✅            Skill + formatSkillsForPrompt(懒加载清单)
+  core/compaction/
+    index.ts ✅                 export * 三件
+    compaction.ts ✅           shouldCompact / findCutPoint / prepareCompaction / generateSummary / compact / turnPrefix
+    branch-summarization.ts ✅ collectEntriesForBranchSummary(LCA) + prepareBranchEntries + generateBranchSummary
+    utils.ts ✅                serializeConversation / formatFileOperations / computeFileLists / SUMMARIZATION_SYSTEM_PROMPT
+  core/session-manager.ts ✅   SessionEntry 类型家族 + buildSessionContext + getBranchPath/getEntryById
 packages/coding-agent/test/
-  context-engine.test.ts    ★ 新建：截断单测 / cutpoint / LCA / 系统提示词
-packages/coding-agent/src/tools/read.ts  ★ 改：接 truncateHead（details 带截断信息）
+  compaction.test.ts ✅        ③ Compaction 8 例 + ④ 分支摘要 12 例,全绿
+  tools/write.test.ts ✅       既有
+  context-engine.test.ts ✅     截断 5 + 系统提示词 2 + skills 2 + read 集成 2 = 11 例,全绿
 ```
+
+> ⚠️ 历史偏差已消除:工具层整体由 `src/tools/` 迁至 `src/core/tools/`(git mv),对齐计划/生产路径;`context-engine.test.ts` 已建立,Tier-1 单测补到 11 例(B-计划 §九 7 条 + 4 条富化)。唯一仍欠:**bash/find/grep 三个桩未见真实实现**、`buildSystemPrompt` 产物尚未接进 agent loop(0 消费者)。
 
 ---
 
-## 四、① 工具输出截断(`tools/truncate.ts`,零依赖,先做)
+## 四、① 工具输出截断(`core/tools/truncate.ts`,零依赖,先做)
 
 ### 4.1 双重限制 + 双向策略(对齐生产 truncate.ts:11-13、78、168)
 
@@ -125,11 +135,12 @@ function truncateTail(content, { maxLines = DEFAULT_MAX_LINES, maxBytes = DEFAUL
 ```
 （bash 落盘是 Tier 2；read 的逃生命令就是 read 本身,提示"输出被截断,可用 limit/继续读"。）
 
-### 4.4 落地
+### 4.4 落地(2026-08-30 核对)
 
-- **read**:`execute` 里 `truncateHead(content)` → `details.truncated`/`truncatedBy`/`outputLines`,超限时 append 逃生提示。
-- **ls**:已有 `limit` 行数控制,可补 `entryLimitReached` 提示(现有)。
-- **bash/grep/find**:仍是桩——实现时各自接 `truncateTail` / `truncateLine`。
+- **read**:✅ 已接 `truncateHead`(`src/core/tools/read.ts` 3 处),details/逃生提示具备,2 例集成单测全绿。
+- **ls**:已有 `limit` 行数控制,`entryLimitReached` 提示(现有)。
+- **bash/grep/find**:仍是桩——**未接** `truncateTail` / `truncateLine`。
+- ✅ **Tier-1 单测已补齐**:`test/context-engine.test.ts`,11 例全绿——truncateTail 断尾 / truncateHead 保头 / 双限制先触者胜 / 多字节 UTF-8 兜底 / truncateLine 截行 / buildSystemPrompt 分层+customPrompt / skills 懒加载清单+XML 转义 / read 长文件·小文件集成。
 
 ---
 
@@ -220,12 +231,12 @@ export async function generateSummary(...): Promise<string>
 - **增量更新**:多次压缩时传 `previousSummary`,走 `UPDATE_SUMMARIZATION_PROMPT` **更新而非重写**(保留 Goal/Constraints,追加 Progress),防摘要漂移的累积误差。
 - 流程:`convertToLlm(旧消息)` → `serializeConversation` 序列化成文本(避免模型误以为要接着对话) → `<conversation>…</conversation>`(+`<previous-summary>`)包裹 → 一次 LLM 调用出结构化摘要。
 
-#### ④ 文件跟踪（⏳ `extractFileOperations` ✅ / `formatFileOperations` 待补）
+#### ④ 文件跟踪（✅ `extractFileOpsFromMessage` + `computeFileLists` + `formatFileOperations`,utils.ts）
 
 - `extractFileOperations` 从**两个来源**累积:上一次压缩的 `details.readFiles/modifiedFiles` + 被压缩消息的 toolCall(read→readFiles、write/edit→modifiedFiles)。
 - 摘要末尾用 **`formatFileOperations`** 输出 `<read-files>…</read-files>` / `<modified-files>…</modified-files>` 标签——编码 Agent 的领域知识:"改过哪些文件"比"聊过什么"更精确可验证,避免重复读/覆盖他人改动。
 
-#### ⑤ Turn 分割（⏳ `prepareCompaction` 已产出 `turnPrefixMessages`;`TURN_PREFIX_SUMMARIZATION_PROMPT` + 并行生成待补）
+#### ⑤ Turn 分割（✅ `prepareCompaction` → `isSplitTurn`;`TURN_PREFIX_SUMMARIZATION_PROMPT` + 并行生成,compaction.ts:753/:864/:846-878）
 
 - 切在 **assistant** 上 = 切断 Turn(user 在压缩区、assistant 在保留区)→ `isSplitTurn: true` → `findTurnStartIndex` 找出该轮 user 起点,`turnPrefixMessages`(user 起点到切点之间)单独生成**轻量 3 段前缀摘要**(Original Request / Early Progress / Context for Suffix),与主摘要 **`Promise.all` 并行**(生产 :784-813),合并进同一 CompactionEntry。
 - **为什么允许 assistant 切点**:只允许 user 切点 → 保留区永远过大、压缩压不动(可能 token 预算只够留 2-3 条却被迫从最近的 user 开始留);允许 assistant 切点 → 精确控 token,代价是 Turn 被切 → 用 turnPrefix 机制弥补。生产选后者(优先保证压缩能生效)。
@@ -237,11 +248,12 @@ CompactionEntry { type:"compaction", summary, tokensBefore, firstKeptEntryId, de
 ```
 - `buildSessionContext()`(session-manager.ts:142)遍历路径遇到 CompactionEntry → 用 `createCompactionSummaryMessage(summary, tokensBefore, timestamp)`(messages.ts:143)生成 `CompactionSummaryMessage` 替换旧消息,其后消息正常 push。
 - 03 的 `convertToLlm` 把它翻成 `<summary>` user 消息 → LLM 看到"之前的历史压缩成了结构化摘要"。
+- 📎 **会话树的机制(路径遍历 / 按类型分派 / 状态覆盖提取 / Compaction 选择性收集)已迁移到 `06-session-management.md` §五**——本段只画结果,树怎么长、怎么压扁看 06。
 
 #### ⑦ 自动压缩集成（⏳ 走 04 的 emit）
 
 - 生产:agent-session 在 **agent_end 之后、下一轮 prompt 提交前**调 `_checkCompaction`(agent-session.ts:1079 注释写明该时机)→ `estimateContextTokens`(:1884)→ `shouldCompact`(:1901)→ `compact()`;发 **`compaction_start / compaction_end`(管道 A 产品事件 `AgentSessionEvent`,agent-session.ts:137/:141,reason: "manual"|"threshold"|"overflow")**供 session.subscribe 显示进度——**不是管道 B**;管道 B 另有 `session_before_compact`(可覆盖压缩参数)与 `session_compact`(带 compactionEntry)。
-- 我们:⚠️ **会话写入 + agent 集成不在当前实现**(不涉及会话管理,顺延会话层)。将来:04 的 emit 在 agent_end 分支等价决策(`await` 同步屏障)→ `appendCompaction` → `buildSessionContext` 置换,下一轮 `[summary, ...recent]`(见 §十 Tier-2 阶段 B-5/6)。
+- 我们:⚠️ **会话写入 + agent 集成不在当前实现**(不涉及会话管理,顺延会话层)。将来:04 的 emit 在 agent_end 分支等价决策(`await` 同步屏障)→ `appendCompaction` → `buildSessionContext` 置换,下一轮 `[summary, ...recent]`(见 §十 Tier-2 阶段 B-5/6)。📎 **`appendCompaction` / `branchWithSummary` / `_persist` 的完整生产形态已展开在 `06-session-management.md` §四/§六,行号可直接引用**。
 
 #### ⑧ 设计精华
 
@@ -249,27 +261,27 @@ CompactionEntry { type:"compaction", summary, tokensBefore, firstKeptEntryId, de
 2. **结构化模板 + 增量更新** = 用 prompt 设计对抗 LLM 认知偏差(固定 section 强制覆盖每个维度;增量防漂移)。
 3. **文件跟踪累积** = 通用压缩机制承载领域特定知识(details 字段),跨压缩累积。
 
-#### 当前实现状态对照（2026-08-24 review）
+#### 当前实现状态对照（2026-08-30 复核）
 
 | 环节 | 生产参照 | 我们 | 状态 |
 |---|---|---|---|
-| 触发/估算 | `shouldCompact`(:225) / `estimateTokens`(:256) / `estimateContextTokens`(:192) | compaction.ts:181 / :214 / :146 | ✅ |
+| 触发/估算 | `shouldCompact`(:225) / `estimateTokens`(:256) / `estimateContextTokens`(:192) | compaction.ts:191 / :224 / :146 | ✅ |
 | 切割 | `findValidCutPoints` / `findTurnStartIndex`(:350) / `findCutPoint`(:392) | 本文件 | ✅ |
-| 准备分割 | `prepareCompaction`(:652) / `CompactionPreparation`(:634) | :475 / :456 | ✅ |
-| 摘要调用 | `generateSummary`(:565) + `serializeConversation`(utils:109) | :665 | ✅ |
+| 准备分割 | `prepareCompaction`(:652) / `CompactionPreparation`(:634) | :485 / :466 | ✅ |
+| 摘要调用 | `generateSummary`(:565) + `serializeConversation`(utils:109) | 本文件 | ✅ |
 | 提示词 | `SUMMARIZATION_PROMPT`(:460) / `UPDATE_SUMMARIZATION_PROMPT`(:493) | 本文件 | ✅ |
-| **编排** | **`compact()`(:759) / `CompactionResult`(:103)** | — | ⏳ |
-| **turnPrefix** | **`TURN_PREFIX_SUMMARIZATION_PROMPT`(:737) + 并行** | — | ⏳ |
-| **文件标签** | **`formatFileOperations`(utils:72)** | — | ⏳ |
+| **编排** | **`compact()`(:759) / `CompactionResult`(:103)** | **compaction.ts:821 / :65** | ✅ |
+| **turnPrefix** | **`TURN_PREFIX_SUMMARIZATION_PROMPT`(:737) + 并行** | **`:753` + `:846-878` Promise.all** | ✅ |
+| **文件标签** | **`formatFileOperations`(utils:72)** | **utils.ts(computeFileLists + formatFileOperations)** | ✅ |
 | 会话存储/重建 | `CompactionEntry` + `buildSessionContext` | session-manager.ts | ✅ |
 | 消息工厂 | `createCompactionSummaryMessage`(messages:109) | messages.ts:143 | ✅ |
-| 自动触发 | `agent-session` agent_end → `compact()` | 走 04 emit(未接) | ⏳ |
+| 自动触发 | `agent-session` agent_end → `compact()` | 走 04 emit(未接) | ⏳ 不在当前实现 |
 
 ---
 
 ## 七、④ 分支摘要(`core/compaction/branch-summarization.ts`)—— 纯算法,依赖 03
 
-### 7.1 LCA 找分叉点(对齐生产 branch-summarization.ts:102,不自建签名)
+### 7.1 LCA 找分叉点(✅ 已落地,对齐生产 branch-summarization.ts:102,不自建签名)
 
 生产真名与签名(照抄):
 ```ts
@@ -279,12 +291,12 @@ export function collectEntriesForBranchSummary(
     targetId: string,
 ): CollectEntriesResult   // { entries: SessionEntry[]; commonAncestorId: string | null }
 ```
-算法(生产 102-125):两侧各取分支路径(`session.getBranch(id)`,root-first);目标路径从后往前找第一个也在旧路径里的节点 = **公共祖先**(`commonAncestorId`);旧路径从叶子向上爬到公共祖先(不含)→ 被放弃的分支 `entries`。`oldLeafId` 为空 → `{ entries: [], commonAncestorId: null }`。教学版可先抽纯函数再用假 session 测。
+算法(生产 102-125):两侧各取分支路径(`session.getBranch(id)`,root-first);目标路径从后往前找第一个也在旧路径里的节点 = **公共祖先**(`commonAncestorId`);旧路径从叶子向上爬到公共祖先(不含)→ 被放弃的分支 `entries`。`oldLeafId` 为空 → `{ entries: [], commonAncestorId: null }`。教学版以纯函数 `getBranchPath`/`getEntryById` 组装最小视图 `ReadonlySessionManager` 落地(见 §十 Tier 3)。
 
-### 7.2 摘要产物(依赖 03)
+### 7.2 摘要产物(✅ 已落地,依赖 03)
 
-- 工厂:03 的 `messages.ts` 补 **`createBranchSummaryMessage(summary, fromId, timestamp)`**;`generateBranchSummary`(branch-summarization.ts:287)产出摘要文本后交给它,并包上 `BRANCH_SUMMARY_PREFIX`(03 已有)由 convertToLlm 翻译。
-- 教学用 mock 生成 5 section(Goal / Constraints / Progress / Key Decisions / Next Steps,**无** Critical Context);`maxTokens=2048` 写死(它只是辅助上下文)。
+- 工厂:03 的 `messages.ts` 已补 **`createBranchSummaryMessage(summary, fromId, timestamp)`**(messages:134);`generateBranchSummary`(branch-summarization.ts:320)产出摘要后交给它,并包上 `BRANCH_SUMMARY_PREFIX`(03 已有)由 convertToLlm 翻译。
+- 真实实现:5 section(Goal / Constraints / Progress / Key Decisions / Next Steps,**无** Critical Context),`maxTokens=2048` 写死;前置 `BRANCH_SUMMARY_PREAMBLE`、末尾 `computeFileLists`/`formatFileOperations` 文件标签;aborted/error 两路可探测(见 §十 Tier 3 与 compaction.test.ts ④)。
 
 > 依赖答案再强调:分支摘要**只产出 03 定义好的 `BranchSummaryMessage`**;注入方式/时机(会话树切换)是后续 Tier；本章先落地 LCA 算法与生成函数。
 
@@ -302,51 +314,57 @@ export function collectEntriesForBranchSummary(
 
 ---
 
-## 九、测试设计(`coding-agent/test/context-engine.test.ts`)
+## 九、测试设计(`coding-agent/test/`)
 
-| 用例 | 断言 |
-|---|---|
-| truncateTail 保留末尾 | 8000 行输入 → 输出 ≤ 2000 行且**以原文件末尾几行结尾**、`truncated: true` |
-| truncateHead 保留开头 | 3000 行 → 以开头 import 行开头、`truncatedBy` 是 "lines"/"bytes" 之一 |
-| 双限制先触者胜 | 超字节不超行(每行 10KB × 10 行)→ `truncatedBy: "bytes"` |
-| 多字节安全 | emoji 行不被切坏(逐码点) |
-| findCutPoint 跳过 toolResult | 尾部连续 toolResult → 切割后最近的 toolResult 保留 |
-| shouldCompact 阈值 | tokens > window−reserve → true |
-| collectEntriesForBranchSummary | 两叶子路径 → 返回被放弃 entries + commonAncestorId(不含公共祖先),纯函数 |
-| buildSystemPrompt 分层 | 输出含 角色/工具列表/date/cwd;有 projectContext 时含 `<project_instructions path=...>` |
-| Skills 懒加载清单 | 只含 name/description/location + "Use the read tool..." 指令,无全文 |
-| read 截断集成 | read 工具对长文件返回 `details.truncated` + 逃生提示 |
+| 用例 | 断言 | 状态 |
+|---|---|---|
+| truncateTail 保留末尾 | 8000 行输入 → 输出 ≤ 2000 行且**以原文件末尾几行结尾**、`truncated: true` | ✅ context-engine.test.ts |
+| truncateHead 保留开头 | 3000 行 → 以开头 import 行开头、`truncatedBy` 是 "lines"/"bytes" 之一 | ✅ context-engine.test.ts |
+| 双限制先触者胜 | 超字节不超行(每行 10KB × 10 行)→ `truncatedBy: "bytes"` | ✅ context-engine.test.ts |
+| 多字节安全 | emoji/多字节行不被切坏(逐码点) | ✅ context-engine.test.ts + truncateLine 截行 |
+| findCutPoint 跳过 toolResult | 尾部连续 toolResult → 切割后最近的 toolResult 保留 | ✅ compaction.test.ts ③ |
+| shouldCompact 阈值 | tokens > window−reserve → true | ✅ compaction.test.ts ③ |
+| collectEntriesForBranchSummary | 两叶子路径 → 返回被放弃 entries + commonAncestorId(不含公共祖先),纯函数 | ✅ compaction.test.ts ④ |
+| prepareBranchEntries / generateBranchSummary | 预算/累积/5-section/file标签/aborted·error(12 例) | ✅ compaction.test.ts ④ |
+| 端到端(Compaction + 分支摘要) | 第二轮 context 以 `<summary>` 开头;分支导航 → 重建 → convertToLlm 见 `<summary>` user | ✅ compaction.test.ts ③/④ |
+| buildSystemPrompt 分层 | 输出含 角色/工具列表/date/cwd;有 projectContext 时含 `<project_instructions path=...>` | ✅ context-engine.test.ts(含 customPrompt 分支) |
+| Skills 懒加载清单 | 只含 name/description/location + "Use the read tool..." 指令,无全文;`disableModelInvocation` 过滤 + XML 转义 | ✅ context-engine.test.ts |
+| read 截断集成 | read 工具对长文件返回 `details.truncated` + 逃生提示;小文件原样 | ✅ context-engine.test.ts |
 
-**现有 23 测试不回归**:read 截断只加在有 `truncate` 时才生效(小文件原样),其余新增是纯函数/新文件。
+**现有 54 测试(8 文件)全绿,无回归**:本表 12 行全部落地——compaction.test.ts 20(③ 8 + ④ 12)+ context-engine.test.ts 11(Tier-1)+ `tools/write.test.ts` 等既有照常。已无测试欠账。
 
 ---
 
 ## 十、实施步骤(分 Tier)
 
-**Tier 1：①截断 + ②系统提示词(✅ 已完成)**
-1. `core/tools/truncate.ts`(双限制 + head/tail/line + XML 多字节安全)。
-2. read 接 `truncateHead`,details 带截断信息。
-3. `core/system-prompt.ts`(`buildSystemPrompt` 分层 + `loadProjectContextFiles` 注入 ops + `formatSkillsForPrompt`)。
-4. 单测第 1-3、8-10 条。
+**Tier 1：①截断 + ②系统提示词(✅ 已完成,代码 + 单测 11 例全绿)**
+1. ✅ `src/core/tools/truncate.ts`(双限制 + head/tail/line + 多字节安全)——工具层整体由 `src/tools/` 迁至 `src/core/tools/`,与生产/计划路径一致。
+2. ✅ read 接 `truncateHead`,details 带截断信息(`src/core/tools/read.ts`)。
+3. ✅ `core/system-prompt.ts`(`buildSystemPrompt` 分层)+ `core/resource-loader.ts`(`loadProjectContextFiles` 注入 ops)+ `core/skills.ts`(`formatSkillsForPrompt`)——⚠️ 仍 **0 消费者**(loop 用字符串 `systemPrompt`,接线是后续 Tier)。
+4. ✅ **单测已补齐**(`test/context-engine.test.ts`,11 例):truncateTail/truncateHead/双限制 bytes/多字节 UTF-8/truncateLine + buildSystemPrompt 分层·customPrompt + skills 清单·XML 转义 + read 长文件·小文件集成。
 
-**Tier 2：③Compaction(依赖 03)——逐步对齐生产 `core/compaction/{compaction,utils}.ts`**
+**Tier 2：③Compaction(依赖 03)——对齐生产 `core/compaction/{compaction,utils}.ts`**
 
 **阶段 A(✅ 已完成,按生产名落地)**:`shouldCompact`(:225)/ `estimateTokens`(:256)/ `estimateContextTokens`(:192)/ `findValidCutPoints`/ `findTurnStartIndex`(:350)/ `findCutPoint`(:392)/ `prepareCompaction`(:652)+ `CompactionPreparation`(:634)/ `generateSummary`(:565)+ `SUMMARIZATION_PROMPT`(:460)+ `UPDATE_SUMMARIZATION_PROMPT`(:493)/ `serializeConversation`(utils:109)/ 工厂 `createCompactionSummaryMessage`(messages:109)。
 
-**阶段 B(⏳ 按序补齐,每步标注生产参照与验证)**:
-1. **`formatFileOperations`**(生产 `utils.ts:72`):由 `FileOperations` 输出 `<read-files>…</read-files>` / `<modified-files>…</modified-files>` 文本。**验证**:单测 `read={a}, edited={b}` → 两段标签,只读未改的进 read、改过的进 modified。
-2. **`CompactionResult`**(生产 `compaction.ts:103`):按生产形态定义(含 `entry: CompactionEntry` 与 kept 信息)。**验证**:typecheck。
-3. **`TURN_PREFIX_SUMMARIZATION_PROMPT`**(生产 `compaction.ts:737`)+ turnPrefix 摘要生成(生产 :855 区域,`maxTokens = min(0.5 × reserveTokens, model.maxTokens)`、3 段格式 Request/Progress/Context)。**验证**:`prepareCompaction` 产出 `isSplitTurn=true` 时能生成前缀摘要。
-4. **`compact()`**(生产 `compaction.ts:759` 编排):`prepareCompaction → 无则 return undefined → generateSummary(主摘要)+ turnPrefix 并行(Promise.all,生产 :784-813)→ createCompactionSummaryMessage → 返回 CompactionResult`。**验证**:单测"切割+摘要 → 产物含 summary/tokensBefore/firstKeptEntryId"。
-5. **会话写入**:⚠️ **不在当前实现**——不涉及会话管理,顺延会话层。将来做:`compact()` 结果作为 `CompactionEntry` 追加(对齐 session-manager.ts:48 形状,`appendCompaction(summary, firstKeptEntryId, tokensBefore, details)`);`buildSessionContext` 已支持重建(session-manager.ts:220 用 `createCompactionSummaryMessage`)。**验证**:构造含 compaction entry 的路径 → buildSessionContext 出 `[CompactionSummaryMessage, ...kept]`(**可先行单测,不依赖会话层**)。
-6. **agent 侧集成**:⚠️ **不在当前实现**——顺延会话层。将来做:04 的 emit 在 agent_end 分支等价生产 `_checkCompaction`(`estimateContextTokens` → `shouldCompact` → `compact()`);发 **`compaction_start / compaction_end`(管道 A 产品事件,reason "threshold";管道 B 另有 session_before_compact / session_compact)**;产物 `appendCompaction` 写会话态。**不再走 transformContext**。**验证**(可先行端到端):两次 `runAgentLoop`,第二轮 context 以 `compactionSummary` 开头,`convertToLlm` 后 LLM 只见 `<summary>` user。
-7. **单测**:`findCutPoint`(尾部连续 toolResult 不切)/ `prepareCompaction`(isSplitTurn 判定)/ `generateSummary`(mock 出 6-section)/ 端到端(见上)。
+**阶段 B(2026-08-30 复核:1-4、7 ✅,5-6 顺延会话层)**:
+1. ✅ **`formatFileOperations`**(生产 `utils.ts:72`):`FileOperations → readFiles/modifiedFiles → <read-files>/<modified-files>` 文本,utils.ts 落地,`computeFileLists` 做去重拆分。**验证**:compaction.test.ts ③ 端到端中文件标签进 `<summary>`。
+2. ✅ **`CompactionResult`**(生产 `compaction.ts:103`):compaction.ts:65 按生产形态定义。**验证**:typecheck + compact() 单测。
+3. ✅ **`TURN_PREFIX_SUMMARIZATION_PROMPT`**(生产 `compaction.ts:737`)+ turnPrefix 摘要生成(`maxTokens = min(0.5 × reserveTokens, model.maxTokens)`、3 段 Request/Progress/Context),`generateTurnPrefixSummary` 在 :864。**验证**:`prepareCompaction` `isSplitTurn=true`(compaction.test.ts ③ 有例)。
+4. ✅ **`compact()`**(生产 `compaction.ts:759` 编排):compaction.ts:821——`prepareCompaction → 无则 return undefined → generateSummary(主)+ turnPrefix 并行(Promise.all,:846-878)→ 合并 → CompactionResult`。**验证**:单测"切割+摘要 → 产物含 summary/tokensBefore/firstKeptEntryId" ✅。
+5. ⏳ **会话写入**:⚠️ **不在当前实现**——不涉及会话管理,顺延**会话层(06)**。📎 完整生产形态见 `06-session-management.md` §四(`appendCompaction`:991)/ §五(`buildSessionContext` 选择性收集)/ §六(`_persist` 落盘策略)。**验证**(可先行单测):构造含 compaction entry 的路径 → buildSessionContext 出 `[CompactionSummaryMessage, ...kept]`(进程内可用,不依赖会话层实例)。
+6. ⏳ **agent 侧集成**:⚠️ **不在当前实现**——顺延会话层。将来:04 的 emit 在 agent_end 分支等价生产 `_checkCompaction`(`estimateContextTokens` → `shouldCompact` → `compact()`);发 **`compaction_start / compaction_end`(管道 A 产品事件,reason "threshold";管道 B 另有 session_before_compact / session_compact)**;产物 `appendCompaction` 写会话态。**不再走 transformContext**。**验证**(已先行端到端,compaction.test.ts ③):两次 `runAgentLoop`,第二轮 context 以 `compactionSummary` 开头,`convertToLlm` 后 LLM 只见 `<summary>` user——**这步验证已完成,只差把目标函数接进 emit**。
+7. ✅ **单测**(compaction.test.ts ③,8 例):`findCutPoint`(尾部连续 toolResult 不切)/ `prepareCompaction`(isSplitTurn 判定)/ `generateSummary`(mock 出 6-section)/ `compact()` 编排 / 端到端两轮 `<summary>` user。
 
-**Tier 3：④分支摘要(依赖 03;会话树后续)——对齐生产 `core/compaction/branch-summarization.ts`**
-1. `collectEntriesForBranchSummary(session, oldLeafId, targetId): CollectEntriesResult`(生产 :102)——依赖会话 `getBranch`;若 session-manager 暂无 `getBranch`,先按"两路径找公共祖先(LCA)"的纯函数落地,**签名保持生产形**,会话树齐了再对齐入参。
-2. `prepareBranchEntries(entries, tokenBudget)`(生产 :189)。
-3. `generateBranchSummary(...)`(生产 :287,5-section 无 Critical Context、`maxTokens=2048`)+ 03 工厂 `createBranchSummaryMessage(summary, fromId, timestamp)`(messages:134)。
-4. **单测**:`collectEntriesForBranchSummary` 返回被放弃 entries + `commonAncestorId`(不含公共祖先)。
+**Tier 3：④分支摘要(依赖 03;会话树后续)——对齐生产 `core/compaction/branch-summarization.ts`(✅ 已完成并单测/端到端覆盖)**
+1. ✅ `collectEntriesForBranchSummary(session, oldLeafId, targetId): CollectEntriesResult`(生产 :102)——session-manager 暂无 `getBranch`,以纯函数 `getBranchPath`/`getEntryById` 组装最小视图 `ReadonlySessionManager` 落地,**签名保持生产形**、LCA 算法逐行同形;会话树齐后真实 SessionManager 直接满足该接口。
+2. ✅ `prepareBranchEntries(entries, tokenBudget)`(生产 :189)——两遍式:pass1 全量收集嵌套 `branch_summary` 的 details 文件累积(`fromHook !== true` 过滤扩展摘要);pass2 从最新往回收、预算内保最近上下文,摘要类条目超预算"10% 余量"内强塞。
+3. ✅ `generateBranchSummary(...)`(生产 :287,5-section 无 Critical Context、`maxTokens=2048`)+ 03 工厂 `createBranchSummaryMessage(summary, fromId, timestamp)`(messages:134)——前置拼 `BRANCH_SUMMARY_PREAMBLE`、末尾拼 `computeFileLists`/`formatFileOperations` 文件标签;aborted/error 两路可探测。
+4. ✅ **单测**(compaction.test.ts 描述块 ④,12 例):
+   - collect:两叶子→被放弃 entries+commonAncestorId(不含公共祖先)/ 无旧位置→空;
+   - prepare:token 预算保最近(时间序不变)/ toolCall read·write·edit 提取 / 嵌套 details 跨分支累积+fromHook 过滤 / 非对话条目跳过 / 摘要类 10% 余量强塞;
+   - generate:mock streamFn→前导+结构化摘要+文件标签+请求形状(SUMMARIZATION_SYSTEM_PROMPT、maxTokens 2048、`<conversation>` 5-section) / 空内容不调 LLM / aborted·error 透传 / customInstructions 追加·replace 替换;
+   - **端到端**:collect→prepare→generate→写 `BranchSummaryEntry`→`buildSessionContext` 重建→`convertToLlm` 见 `<summary>` 包裹的 branchSummary user，正文含 `<modified-files>` 标签。
 
 ---
 

@@ -248,3 +248,20 @@ export function buildSessionContext(
 
 	return { messages, thinkingLevel, model };
 }
+
+/** 沿 parentId 从 leaf 上溯到 root,返回 root-first 路径(纯函数版;生产 SessionManager.getBranch 是方法,会话树齐了可直接对齐)。 */
+export function getBranchPath(entries: SessionEntry[], leafId: string | null): SessionEntry[] {
+	const byId = new Map(entries.map((entry) => [entry.id, entry]));
+	const path: SessionEntry[] = [];
+	let current: SessionEntry | undefined = leafId ? byId.get(leafId) : undefined;
+	while (current) {
+		path.unshift(current);
+		current = current.parentId ? byId.get(current.parentId) : undefined;
+	}
+	return path;
+}
+
+/** 按 id 查一条 entry(纯函数;分支摘要的最小会话视图用)。 */
+export function getEntryById(entries: SessionEntry[], id: string): SessionEntry | undefined {
+	return entries.find((entry) => entry.id === id);
+}

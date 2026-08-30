@@ -70,7 +70,11 @@ export function computeFileLists(fileOps: FileOperations): { readFiles: string[]
 
 
 /**
- * Format file operations as XML tags for summary.
+ * 把文件清单格式化成摘要末尾的 XML 标签:
+ *   <read-files>…(只读未改的文件)</read-files>
+ *   <modified-files>…(被改动过的文件)</modified-files>
+ * 两类都为空时返回空串;否则标签前补两个换行,与摘要正文隔开。
+ * 作用:让"改过哪些文件"以机器可读的标签形式留在摘要里,供回来时快速定位影响面。
  */
 export function formatFileOperations(readFiles: string[], modifiedFiles: string[]): string {
 	const sections: string[] = [];

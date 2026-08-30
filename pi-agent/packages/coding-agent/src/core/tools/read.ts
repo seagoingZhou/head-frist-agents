@@ -2,9 +2,9 @@ import { access as fsAccess, readFile as fsReadFile } from "node:fs/promises";
 import { join } from "node:path";
 import { text } from "pi-ai";
 import type { AgentTool } from "pi-agent-core";
-import type { ToolDefinition } from "../core/types.ts";
+import type { ToolDefinition } from "../types.ts";
 import { type Static, Type } from "@sinclair/typebox";
-import { WORKSPACE_ROOT } from "../utils/paths.ts";
+import { WORKSPACE_ROOT } from "../../utils/paths.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { truncateHead } from "./truncate.ts";
 

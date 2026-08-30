@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createWriteTool } from "../../src/tools/write.ts";
+import { createWriteTool } from "../../src/core/tools/write.ts";
 
 describe("write tool", () => {
   let tmp: string;

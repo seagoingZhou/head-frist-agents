@@ -1,5 +1,5 @@
 import type { AgentTool } from "pi-agent-core";
-import type { ExtensionContext, ToolDefinition } from "../core/types.ts";
+import type { ExtensionContext, ToolDefinition } from "../types.ts";
 
 /** 把工具定义适配成 AgentTool 供核心循环执行；定义上的系统提示/渲染元数据不进入运行时。 */
 export function wrapToolDefinition(
