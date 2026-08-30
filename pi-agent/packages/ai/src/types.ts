@@ -4,41 +4,41 @@ import { AssistantMessageEventStream } from "./utils/event-stream";
 
 
 export type Api =
-	| "openai-completions"
+  | "openai-completions"
   | "mock"
-	;
+  ;
 
 
 export interface ApiOptionsMap {
-	"openai-completions" : OpenAICompletionsOptions;
-  "mock" : StreamOptions;
+  "openai-completions": OpenAICompletionsOptions;
+  "mock": StreamOptions;
 }
 
 
 // Compile-time exhaustiveness check - this will fail if ApiOptionsMap doesn't have all KnownApi keys
 type _CheckExhaustive = ApiOptionsMap extends Record<Api, StreamOptions>
-	? Record<Api, StreamOptions> extends ApiOptionsMap
-		? true
-		: ["ApiOptionsMap is missing some KnownApi values", Exclude<Api, keyof ApiOptionsMap>]
-	: ["ApiOptionsMap doesn't extend Record<KnownApi, StreamOptions>"];
+  ? Record<Api, StreamOptions> extends ApiOptionsMap
+  ? true
+  : ["ApiOptionsMap is missing some KnownApi values", Exclude<Api, keyof ApiOptionsMap>]
+  : ["ApiOptionsMap doesn't extend Record<KnownApi, StreamOptions>"];
 const _exhaustive: _CheckExhaustive = true;
 
 // Helper type to get options for a specific API
 export type OptionsForApi<TApi extends Api> = ApiOptionsMap[TApi];
 
 export type KnownProvider =
-	| "anthropic"
-	| "google"
-	| "google-gemini-cli"
-	| "google-antigravity"
-	| "openai"
-	| "github-copilot"
-	| "xai"
-	| "groq"
-	| "cerebras"
-	| "openrouter"
-	| "zai"
-	| "mistral";
+  | "anthropic"
+  | "google"
+  | "google-gemini-cli"
+  | "google-antigravity"
+  | "openai"
+  | "github-copilot"
+  | "xai"
+  | "groq"
+  | "cerebras"
+  | "openrouter"
+  | "zai"
+  | "mistral";
 export type Provider = KnownProvider | string;
 export type ProviderId = KnownProvider | string;
 
@@ -46,13 +46,13 @@ export type ProviderId = KnownProvider | string;
 export type TextContent = { type: "text"; text: string };
 
 export interface ThinkingContent {
-	type: "thinking";
-	thinking: string;
-	thinkingSignature?: string; // e.g., for OpenAI responses, the reasoning item ID
-	/** When true, the thinking content was redacted by safety filters. The opaque
-	 *  encrypted payload is stored in `thinkingSignature` so it can be passed back
-	 *  to the API for multi-turn continuity. */
-	redacted?: boolean;
+  type: "thinking";
+  thinking: string;
+  thinkingSignature?: string; // e.g., for OpenAI responses, the reasoning item ID
+  /** When true, the thinking content was redacted by safety filters. The opaque
+   *  encrypted payload is stored in `thinkingSignature` so it can be passed back
+   *  to the API for multi-turn continuity. */
+  redacted?: boolean;
 }
 
 export type ToolCall = {
@@ -79,6 +79,8 @@ export type Usage = {
   };
 };
 
+export type StopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
+
 export type UserMessage = {
   role: "user";
   content: TextContent[];
@@ -89,9 +91,9 @@ export type AssistantMessage = {
   role: "assistant";
   content: Array<TextContent | ToolCall | ThinkingContent>;
   api: Api;
-	provider: ProviderId;
+  provider: ProviderId;
   model: string;
-  stopReason: "stop" | "toolUse" | "error" | "aborted";
+  stopReason: StopReason;
   usage: Usage;
   timestamp: number;
   errorMessage?: string;
@@ -127,22 +129,53 @@ export type StreamFunction<TApi extends Api> = (
   options?: StreamOptions,
 ) => AssistantMessageEventStream;
 export interface Context {
-	systemPrompt?: string;
-	messages: Message[];
-	tools?: Tool[];
+  systemPrompt?: string;
+  messages: Message[];
+  tools?: Tool[];
 }
 
 export type ReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
+
+/** Token budgets for each thinking level (token-based providers only) */
+export interface ThinkingBudgets {
+  minimal?: number;
+  low?: number;
+  medium?: number;
+  high?: number;
+}
+
+/** Provider-scoped environment overrides. Values take precedence over process.env. */
+export type ProviderEnv = Record<string, string>;
+export type ProviderHeaders = Record<string, string | null>;
 
 export interface StreamOptions {
   temperature?: number;
   maxTokens?: number;
   signal?: AbortSignal;
-  apikey?: string;
+  apiKey?: string;
+
+  /**
+	 * Optional custom HTTP headers to include in API requests.
+	 * Merged with provider defaults; caller values override default headers.
+	 * On AWS Bedrock these are injected via a Smithy `build`-step middleware so
+	 * they are covered by SigV4 signing; reserved headers (`x-amz-*`,
+	 * `authorization`, `host`) are silently ignored to preserve SigV4 / bearer auth.
+	 * A null value suppresses a provider/API default header with the same name.
+	 */
+	headers?: ProviderHeaders;
+
+  /**
+	 * Provider-scoped environment values. These take precedence over process.env for
+	 * provider configuration such as regional settings, endpoint placeholders, and
+	 * proxy variables.
+	 */
+	env?: ProviderEnv;
 }
 
 export interface SimpleStreamOptions extends StreamOptions {
   reasoning?: ReasoningEffort;
+  /** Custom token budgets for thinking levels (token-based providers only) */
+  thinkingBudgets?: ThinkingBudgets;
 }
 
 
@@ -151,16 +184,15 @@ export type SessionEntry =
   | { type: "session"; version: 1; id: string; timestamp: string; cwd: string }
   | { type: "message"; id: string; parentId: string | null; timestamp: string; message: Message }
   | {
-      type: "compaction";
-      id: string;
-      parentId: string | null;
-      timestamp: string;
-      summary: string;
-      firstKeptEntryId: string;
-      tokensBefore: number;
-    };
+    type: "compaction";
+    id: string;
+    parentId: string | null;
+    timestamp: string;
+    summary: string;
+    firstKeptEntryId: string;
+    tokensBefore: number;
+  };
 
-export type StopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
 
 
 
@@ -173,18 +205,18 @@ export type StopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
  *   and errorMessage.
  */
 export type AssistantMessageEvent =
-	| { type: "start"; partial: AssistantMessage }
-	| { type: "text_start"; contentIndex: number; partial: AssistantMessage }
-	| { type: "text_delta"; contentIndex: number; delta: string; partial: AssistantMessage }
-	| { type: "text_end"; contentIndex: number; content: string; partial: AssistantMessage }
-	| { type: "thinking_start"; contentIndex: number; partial: AssistantMessage }
-	| { type: "thinking_delta"; contentIndex: number; delta: string; partial: AssistantMessage }
-	| { type: "thinking_end"; contentIndex: number; content: string; partial: AssistantMessage }
-	| { type: "toolcall_start"; contentIndex: number; partial: AssistantMessage }
-	| { type: "toolcall_delta"; contentIndex: number; delta: string; partial: AssistantMessage }
+  | { type: "start"; partial: AssistantMessage }
+  | { type: "text_start"; contentIndex: number; partial: AssistantMessage }
+  | { type: "text_delta"; contentIndex: number; delta: string; partial: AssistantMessage }
+  | { type: "text_end"; contentIndex: number; content: string; partial: AssistantMessage }
+  | { type: "thinking_start"; contentIndex: number; partial: AssistantMessage }
+  | { type: "thinking_delta"; contentIndex: number; delta: string; partial: AssistantMessage }
+  | { type: "thinking_end"; contentIndex: number; content: string; partial: AssistantMessage }
+  | { type: "toolcall_start"; contentIndex: number; partial: AssistantMessage }
+  | { type: "toolcall_delta"; contentIndex: number; delta: string; partial: AssistantMessage }
   | { type: "done"; reason: Extract<StopReason, "stop" | "length" | "toolUse">; message: AssistantMessage }
-	| { type: "error"; reason: Extract<StopReason, "aborted" | "error">; error: AssistantMessage };
-	
+  | { type: "error"; reason: Extract<StopReason, "aborted" | "error">; error: AssistantMessage };
+
 
 export type SessionResponse = {
   sessionId: string;
@@ -194,22 +226,22 @@ export type SessionResponse = {
 };
 
 export interface OpenAICompat {
-	/** Whether the provider supports the `store` field. Default: auto-detected from URL. */
-	supportsStore?: boolean;
-	/** Whether the provider supports the `developer` role (vs `system`). Default: auto-detected from URL. */
-	supportsDeveloperRole?: boolean;
-	/** Whether the provider supports `reasoning_effort`. Default: auto-detected from URL. */
-	supportsReasoningEffort?: boolean;
-	/** Which field to use for max tokens. Default: auto-detected from URL. */
-	maxTokensField?: "max_completion_tokens" | "max_tokens";
-	/** Whether tool results require the `name` field. Default: auto-detected from URL. */
-	requiresToolResultName?: boolean;
-	/** Whether a user message after tool results requires an assistant message in between. Default: auto-detected from URL. */
-	requiresAssistantAfterToolResult?: boolean;
-	/** Whether thinking blocks must be converted to text blocks with <thinking> delimiters. Default: auto-detected from URL. */
-	requiresThinkingAsText?: boolean;
-	/** Whether tool call IDs must be normalized to Mistral format (exactly 9 alphanumeric chars). Default: auto-detected from URL. */
-	requiresMistralToolIds?: boolean;
+  /** Whether the provider supports the `store` field. Default: auto-detected from URL. */
+  supportsStore?: boolean;
+  /** Whether the provider supports the `developer` role (vs `system`). Default: auto-detected from URL. */
+  supportsDeveloperRole?: boolean;
+  /** Whether the provider supports `reasoning_effort`. Default: auto-detected from URL. */
+  supportsReasoningEffort?: boolean;
+  /** Which field to use for max tokens. Default: auto-detected from URL. */
+  maxTokensField?: "max_completion_tokens" | "max_tokens";
+  /** Whether tool results require the `name` field. Default: auto-detected from URL. */
+  requiresToolResultName?: boolean;
+  /** Whether a user message after tool results requires an assistant message in between. Default: auto-detected from URL. */
+  requiresAssistantAfterToolResult?: boolean;
+  /** Whether thinking blocks must be converted to text blocks with <thinking> delimiters. Default: auto-detected from URL. */
+  requiresThinkingAsText?: boolean;
+  /** Whether tool call IDs must be normalized to Mistral format (exactly 9 alphanumeric chars). Default: auto-detected from URL. */
+  requiresMistralToolIds?: boolean;
 }
 
 export interface Model<TApi extends Api> {
@@ -220,7 +252,7 @@ export interface Model<TApi extends Api> {
   baseUrl?: string;
   reasoning: boolean;
   input: ("text" | "image")[];
-  cost:{
+  cost: {
     input: number;
     output: number;
     cacheRead: number;

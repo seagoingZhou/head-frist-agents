@@ -1,21 +1,22 @@
-import { 
-    AssistantMessageEventStream 
+import {
+	AssistantMessageEventStream
 } from "./utils/event-stream.ts";
-import type { 
-    Api, 
-    Model, 
-    Context,
-    SimpleStreamOptions,
-    KnownProvider,
-    OptionsForApi
+import type {
+	Api,
+	Model,
+	Context,
+	SimpleStreamOptions,
+	KnownProvider,
+	OptionsForApi,
+	AssistantMessage
 } from "./types.ts";
-import { 
-    type OpenAICompletionsOptions, 
-    streamOpenAICompletions 
+import {
+	type OpenAICompletionsOptions,
+	streamOpenAICompletions
 } from "./providers/openai-completions.ts";
 import {
-    streamMock 
-    } from "./providers/mock.ts";
+	streamMock
+} from "./providers/mock.ts";
 
 
 /**
@@ -27,11 +28,11 @@ export function getEnvApiKey(provider: KnownProvider): string | undefined;
 export function getEnvApiKey(provider: string): string | undefined;
 export function getEnvApiKey(provider: any): string | undefined {
 
-    // mock provider 不需要真实 key，但要让下游通用的 key 检查通过
+	// mock provider 不需要真实 key，但要让下游通用的 key 检查通过
 	if (provider === "mock") {
 		return "mock-key";
 	}
-    
+
 	// Fall back to environment variables
 	if (provider === "github-copilot") {
 		return process.env.COPILOT_GITHUB_TOKEN || process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
@@ -61,17 +62,26 @@ export function getEnvApiKey(provider: any): string | undefined {
 
 
 export function streamSimple<TApi extends Api>(
-    Model: Model<TApi>,
-    context: Context,
-    options?: SimpleStreamOptions
+	Model: Model<TApi>,
+	context: Context,
+	options?: SimpleStreamOptions
 ): AssistantMessageEventStream {
-    const apiKey = options?.apikey || getEnvApiKey(Model.provider);
-    if (!apiKey) {
-        throw new Error(`No API key for provider: ${Model.provider}`);
-    }
-    const providerOptions = { ...options, apikey: apiKey };
-    return stream(Model, context, providerOptions as OptionsForApi<TApi>);
+	const apiKey = options?.apiKey || getEnvApiKey(Model.provider);
+	if (!apiKey) {
+		throw new Error(`No API key for provider: ${Model.provider}`);
+	}
+	const providerOptions = { ...options, apikey: apiKey };
+	return stream(Model, context, providerOptions as OptionsForApi<TApi>);
 
+}
+
+export async function completeSimple<TApi extends Api>(
+	model: Model<TApi>,
+	context: Context,
+	options?: SimpleStreamOptions,
+): Promise<AssistantMessage> {
+	const s = streamSimple(model, context, options);
+	return s.result();
 }
 
 export function stream<TApi extends Api>(
@@ -79,7 +89,7 @@ export function stream<TApi extends Api>(
 	context: Context,
 	options?: OptionsForApi<TApi>,
 ): AssistantMessageEventStream {
-	const apiKey = options?.apikey || getEnvApiKey(model.provider);
+	const apiKey = options?.apiKey || getEnvApiKey(model.provider);
 	if (!apiKey) {
 		throw new Error(`No API key for provider: ${model.provider}`);
 	}
@@ -107,8 +117,8 @@ export function stream<TApi extends Api>(
 		// 		providerOptions as GoogleGeminiCliOptions,
 		// 	);
 
-        case "mock":
-            return streamMock(model as Model<"mock">, context, providerOptions as OptionsForApi<"mock">);
+		case "mock":
+			return streamMock(model as Model<"mock">, context, providerOptions as OptionsForApi<"mock">);
 
 		default: {
 			// This should never be reached if all Api cases are handled
