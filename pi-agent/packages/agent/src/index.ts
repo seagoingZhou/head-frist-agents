@@ -2,3 +2,8 @@
 // 各模块通过 `import { ... } from "pi-agent-core"` 引用。
 export * from "./types.ts";
 export * from "./agent-loop.ts";
+export * from "./agent.ts";
+
+
+export { uuidv7 } from "./harness/session/uuid.ts";
+

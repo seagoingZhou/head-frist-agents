@@ -7,5 +7,6 @@ export * from "./stream.ts"
 
 export * from "./utils/event-stream.ts";
 export * from "./utils/validation.ts";
+export * from "./compat.ts";
 
 

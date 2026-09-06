@@ -460,7 +460,7 @@ e6 (assistant)
 2. **纯函数 `buildSessionContext(entries, leafId?, byId?)`**(生产 :325):路径遍历(parentId 上溯 → reverse)→ 按类型分派 → 状态覆盖式提取(`model` 初值 null,:367;`thinkingLevel` 默认 "off")→ compaction 选择性收集(:401-424,`firstKeptEntryId` 前跳过)。教学落地 ✅。**验证**:compaction.test.ts 已有端到端;建议补一份**纯分派遣型表**单测——9 种 entry 各放一条,断言各自的去处(进 messages / 改状态 / 跳过)。
 3. **`getBranchPath`/`getEntryById` 纯函数**:对齐生产 `SessionManager.getBranch`(:1152)的路径语义(含自己、root-first、支持 null → 空)。教学落地 ✅(branch-summarization 的最小会话视图用)。**验证**:compaction.test.ts ④ 已覆盖 LCA 采集。
 
-### Tier 2:SessionManager 类与内存树(⏳ 待实现)
+### Tier 2:SessionManager 类与内存树(✅ 已完成,2026-09 复核)
 
 > 落地文件:`packages/coding-agent/src/core/session-manager.ts`(追加,生产就是同文件)。类初始化所需状态:`sessionId/sessionFile/sessionDir/cwd/persist/flushed/fileEntries/byId/labelsById/labelTimestampsById/leafId`(:758-769)。
 
@@ -494,7 +494,7 @@ e6 (assistant)
 14. **`branchWithSummary(branchFromId, summary, details?, fromHook?)`**(:1265):先 `leafId=branchFromId`,再 append 一条 `BranchSummaryEntry{parentId:分支点, fromId, summary, details, fromHook}`——**summary 是入参,SessionManager 不调 LLM**;生成在 agent-session(:2811 `generateBranchSummary` → :2866 调它)。**验证**(端到端):collect→generate→branchWithSummary→buildSessionContext 见 `<summary>` 包裹的 branchSummary user(05 §十 Tier-3 已有同款,套到类上)。
 15. **`createBranchedSession(leafId)`**(:1289):克隆"root→leaf"到**新文件**,过滤 label 并重链 parentId(:1296-1305)。**验证**:克隆后新文件路径不含被弃分支,仅当前路径。
 
-### Tier 3:JSONL 落盘(⏳ 待实现)
+### Tier 3:JSONL 落盘(✅ 已完成,2026-09 复核)
 
 > 教学仓测试写法参考现有 `test/tools/write.test.ts`:用 `mkdtemp` 临时目录 + 注入 workspace。SessionManager 落盘用 node fs,单测就指向临时目录,跑完 `rm`。
 
@@ -504,13 +504,128 @@ e6 (assistant)
 4. **`_rewriteFile()`**(:873)+ 触发点:空/损坏重建(:800)、版本迁移(:812)。**验证**:改坏第一行 → `setSessionFile` 重建 header。
 5. **加载与迁移**:`loadEntriesFromFile`(:467)/`parseSessionEntries`(:294)/`migrateSessionEntries`(:289,v1→v2→v3)。**验证**:v1 无 id/parentId 的旧文件 → 迁移后补齐树结构、`firstKeptEntryIndex` 换 `firstKeptEntryId`(:240-250)。
 
-### Tier 4:agent 侧集成(⏳ 待实现,生产 `agent-session.ts`)
+### Tier 4:agent 侧集成(骨架 Phase 0/1 ✅,Phase 2-6 ⏳,代码逻辑见 4.3;生产 `agent-session.ts` / `packages/agent/src/agent.ts`,2026-09 重构)
 
-把 SessionManager 接进 agent loop(04 的 emit 已具备 agent_end 同步屏障):
+> 目标:**把已有的 compaction / SessionManager / emit / convertToLlm 五件套,用生产 `AgentSession` 类收编成一个完整闭环——能跑、能压缩、能跨轮恢复。** 所有 public / private 方法**严格对齐生产命名与行号**,不发明名字。
+>
+> ✅ 现状(2026-09):`agent-session.ts` 教学骨架已落盘(类型/字段/生命周期/持久化已实写,余为桩);协作者(Agent/SettingsManager/ModelRegistry)+ pi-ai compat 桩就位,typecheck 绿。**`Agent` 当前是骨架桩**(`prompt` 仅 `state.messages.push`,未接 `runAgentLoop`)——Phase 2 把它填实即"能跑"。
+> ⚠️ 纪律:本小节描述"要实现的确切代码逻辑",**本轮只落骨架/注释/桩,不写生逻辑**;落成时逐 Phase 按生产锚点照抄。
 
-1. **压缩触发(agent_end → compact → appendCompaction)**:`agent_end` 分支里 `estimateContextTokens` → `shouldCompact(window, settings)` → 是则 `compact()`(05 §六:主摘要+turnPrefix `Promise.all`)→ 结果 `sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details)`;发 **`compaction_start`/`compaction_end`(管道 A 产品事件,reason "threshold")**。**验证**(05 已先行端到端):两次 runAgentLoop,第二轮上下文以 `compactionSummary` 开头,convertToLlm 只见 `<summary>` user——只差把 `appendCompaction` 接进 emit。
-2. **分支导航(collect → generate → branchWithSummary)**:切分支时 `collectEntriesForBranchSummary(session, oldLeaf, target)` 找被弃分支 → `generateBranchSummary(entries, {...})` 出摘要(5-section,05 §七)→ `sessionManager.branchWithSummary(fromId, summary, {readFiles, modifiedFiles})`。**验证**:05 §十 Tier-3 端到端已覆盖"写 BranchSummaryEntry → buildSessionContext → `<summary>` user",把手工写 entry 换成走类方法。
-3. **每轮 LLM 前重建**:以 `sessionManager.getBranch(leafId)`(或 `buildSessionContext()`) 为上下文来源 → `convertToLlm` → 提交。**验证**:从磁盘重载 session → 上下文与内存态一致。
+#### 4.1 生产 API 面概述(`packages/coding-agent/src/core/agent-session.ts`,3159 行;教学骨架已按此表落盘)
+
+| 分组 | public / private 方法(生产行号) |
+|---|---|
+| 发消息 | `sendUserMessage(:1354)` → `prompt(:997)` → `_runAgentPrompt(:947)` → `_handlePostAgentRun(:958)`;流式旁路 `steer(:1218)`/`followUp(:1238)` |
+| 订阅/生命周期 | `subscribe(:691)`/`dispose(:728)`/`reload`;`_emit(:469)`/`_handleAgentEvent(:487)`:`_{disconnect,reconnect}ToAgent(:708/:719)` |
+| 模型/思考 | `cycleModel`/`setModel`/`cycleThinkingLevel`/`setThinkingLevel`/`_clampThinkingLevel`/`supportsThinking`/`setScopedModels` + getters(`model`/`thinkingLevel`/`isStreaming`/`systemPrompt`/`messages` 等) |
+| 压缩 | `compact(customInstructions?)(:1652 手动)`/`_checkCompaction(:1816)`/`_runAutoCompaction(:1910)`/`setAutoCompactionEnabled`/`abortCompaction`/`isCompacting`/`getContextUsage` |
+| 重试 | `_prepareRetry`/`_isRetryableError`/`_isNonRetryableProviderLimitError`/`_willRetryAfterAgentEnd(:560)`/`abortRetry`/`setAutoRetryEnabled`/`retryAttempt` |
+| 分支导航 | `navigateTree(targetId,{summarize?})(:2724)`/`abortBranchSummary`/`getUserMessagesForForking`/`createReplacedSessionContext` |
+| 队列 | `clearQueue`/`getSteeringMessages`/`getFollowUpMessages`/`setSteeringMode`/`setFollowUpMode`/`_emitQueueUpdate(:475)` |
+| 工具/系统提示 | `_buildRuntime`/`_rebuildSystemPrompt(:907)`/`_refreshToolRegistry`/`setActiveToolsByName`/`getAllTools`/`getToolDefinition`/`_installAgentToolHooks(:414)` |
+| 会话 | `setSessionName`/`getSessionStats` + `sessionFile`/`sessionId`/`sessionName` |
+| 外围(子系统) | `executeBash`/`abortBash`/`recordBashResult`、`bindExtensions` 全家、`exportToHtml`/`exportToJsonl` |
+
+#### 4.2 协作者边界与现状(✅ 骨架/桩,Phase 2+ 填实)
+
+生产 `constructor(agent-session.ts:334)` 要求 4 个协作者。教学仓:`SessionManager` ✅ 就绪(Tier 2/3);其余 **Phase-0 骨架已落盘**(方法名对齐生产,体为 TODO 桩):
+
+1. ✅ **`packages/agent/src/agent.ts` — `class Agent`**(从 `pi-agent-core` 导入):目前只有 `subscribe`/`prompt`(stub)/`continue`(stub)/`hasQueuedMessages`(stub)/`state.messages`/`model`/`streamFn`/`isStreaming`/`beforeToolCall`/`afterToolCall`;**生产完整接口面(AgentQueue、steer/followUp 队列、waitForIdle/signal/abort/reset、runPromptMessages/runContinuation/runWithLifecycle)待 Phase 2 加桩 + 实装**(4.4 管线给出对接点)。
+2. ✅ **`settings-manager.ts`**:`getCompactionSettings()`(默认 `DEFAULT_COMPACTION_SETTINGS`)/`getRetrySettings()`;写口留 TODO。
+3. ✅ **`model-registry.ts`**:`getApiKeyAndHeaders(model)`/`isUsingOAuth(model)`;env 取 key 留 TODO。
+
+跨包桩 ✅:`packages/ai/src/compat.ts`(`clampThinkingLevel`/`getSupportedThinkingLevels`/`isContextOverflow`/`modelsAreEqual`),级別用本地 `CompatThinkingLevel` 避免跨包耦合。`ResourceLoader`/`ExtensionRunner` 缺席 → `_emitExtensionEvent` 空、`_installAgentToolHooks` 空钩子。
+
+#### 4.3 逐 Phase 实施细节(每步:目标 / 要实现的代码逻辑 / 验证)
+
+**Phase 1 — agent-session.ts 骨架(✅ 已落盘,补单测即可)**
+- 目标:AgentSession 类型/字段/生命周期在,listener 能收到转发事件。
+- 已写:事件联合(:125-149)/config/PromptOptions;全字段(:270-332+`_lastAssistantMessage`:484);`constructor`(:334,内部 `agent.subscribe(_handleAgentEvent)`);`subscribe`/`dispose`/`_emit`/`_emitQueueUpdate`/`_{disconnect,reconnect}ToAgent`;`_handleAgentEvent`(message_end 持久化**已实写**)、prompt 族/压缩/分支/getter 桩(注释钉生产行号)。
+- 待做:**补单测**——构造成功、`subscribe` 收 `_emit` 转发、`_handleAgentEvent` 对 message_end 持久化到 SessionManager。
+
+**Phase 2 — 每轮闭环「能跑」(⏳,核心缺口)**
+- 目标:Agent.prompt 真接 `runAgentLoop`,`sendUserMessage("...")` 能跑完整一轮;树、事件、状态三方同步。
+- 要实现的代码逻辑(全部在 `packages/agent/src/agent.ts`,方法名照生产 `packages/agent/src/agent.ts:166-557`):
+  1. **`AgentQueue`**(生产 :117-164):`enqueue`/`hasItems`/`drain`/`clear` → 字段 `steeringQueue`/`followUpQueue`;
+  2. **`steer`/`followUp`/`clear{Steering,FollowUp,All}Queues`/`hasQueuedMessages`**(:264-292)——置入选区/排队,`hasQueuedMessages` 供 `_handlePostAgentRun` 判断续跑;
+  3. **`prompt`**(:325):guard `activeRun` → `normalizePromptInput`(:367)→ `runPromptMessages`;
+  4. **`continue`**(:338):guard → 末条 assistant 时先 drain steering→followUp 各跑一轮,否则 `runContinuation`;
+  5. **`runPromptMessages`**(:386)/**`runContinuation`**(:402):`runWithLifecycle(() => runAgentLoop(messages, createContextSnapshot(), createLoopConfig(), e⇒processEvents(e,signal), signal, streamFn))`;`newMessages` 并入 `state.messages`(教学 `runContinuation` = `runAgentLoop([], …)` 空 prompts 续出 assistant);
+  6. **`createContextSnapshot`**(:414):`systemPrompt + messages.slice() + tools.slice()`(快照副本,防 loop 在已合并数组上追加);
+  7. **`createLoopConfig`**(:422 教学映射):`model/convertToLlm/beforeToolCall/afterToolCall/` **`getQueuedMessages`** = drain 两队列(生产是 `getSteeringMessages`/`getFollowUpMessages` 两口,教学 AgentLoopConfig 只有 `getQueuedMessages`,合并之;`skipInitialSteeringPoll` 走入口分支);
+  8. **`runWithLifecycle`**(:451):guard activeRun、建 AbortController+promise、置 `isStreaming`,executor 跑 loop,finally `finishRun`;
+  9. **`handleRunFailure`**(:476):loop 抛错时补 error/aborted assistant 消息并广播三角色事件;`finishRun`(:494)清流式态并 resolve;
+  10. **`signal`/`abort`/`waitForIdle`**(:294-311)/**`reset`**(:314);`processEvents` await 每个 listener(`(event, signal)`)。
+- 工程输入:构造 Agent 时**必须**喂 `convertToLlm`(03 的)、`systemPrompt`(05 `buildSystemPrompt`)、`model`、`streamFn`(mock;缺省会回落 `streamSimple` 真打 API)。
+- 验证:发一段 user → `SessionManager` 树长出 user/assistant/toolResult;listener 依次收到 `message_start/end`、`turn_start/end`、工具诸事件、`agent_end`;`buildSessionContext` 压扁正确、`convertToLlm` 后 LLM 只见标准三角色。
+
+**Phase 3 — 压缩「能压」(⏳,骨架已大半)**
+- 目标:agent_end 后自动压;手动 `compact` 等效。
+- 代码逻辑:`_checkCompaction(:1816,threshold 路径骨架已写)`——**待补**:`getLatestCompactionEntry`(生产 session-manager.ts:311,防"刚压完被旧 usage 顶起"的边界)先落进 `session-manager.ts`;`_runAutoCompaction(:1910 已写,:1736-1739 三行生效)`、`compact(:1652 手动已写)`、`setAutoCompactionEnabled`/`abortCompaction`/`isCompacting`/`getContextUsage` 桩;`_getCompactionRequestAuth` 走 ModelRegistry 桩。`isContextOverflow`(overflow 路径)留到 compat 桩实装后再接。
+- 验证(闭合 05 端到端):塞超阈值上下文 → `agent_end` → 自动压 → 下一轮 `convertToLlm` 第一条是 `<summary>` user、树出现 compaction entry;`compact()` 手动等效。
+
+**Phase 4 — 跨轮恢复「能恢复」(⏳,桩)**
+- 代码逻辑:retry 家族——`_isRetryableError`/`_isNonRetryableProviderLimitError`/`_prepareRetry`(延迟+`agent.continue`)/`_willRetryAfterAgentEnd(:560)`/`abortRetry`/`setAutoRetryEnabled`/`retryAttempt`;`reload`(`sessionManager.setSessionFile`→`_buildIndex`→`buildSessionContext`);`setSessionName`/`getSessionStats`。
+- 验证:落盘后 `new AgentSession` 同 sessionFile → 上下文恢复;压缩后不因旧 usage 二次触发。
+
+**Phase 5 — 分支导航 / 模型思考(⏳)**
+- 代码逻辑:`navigateTree`(骨架已写,含只读 view 垫片)+`abortBranchSummary`/`getUserMessagesForForking`;`setModel`/`cycleModel`/`setThinkingLevel`/`cycleThinkingLevel`/`supportsThinking`(生产 :1453/:1476/:1546/:1574/:1598)。
+- 验证:两分支树 navigate → 新路径上下文带 `<summary>` 分支摘要;换模型后 `model_change` 节点上树。
+
+**Phase 6 — 外围逐一对齐(⏳,依赖子系统)**
+- `executeBash`/`recordBashResult`/`abortBash`(`bash-executor`)、`exportToHtml`/`exportToJsonl`(`export-html`)、`bindExtensions` + `ContextUsage`/`SessionStats`/`ReplacedSessionContext`/`BashResult` 占位删除改 import。逐个移植子系统后对齐,不混进 Phase 2-4。
+
+#### 4.4 Agent(骨架)↔ AgentSession 整合联动管线(详细)
+
+**装配(唯一对接点)**
+```
+driver: new Agent({ model, systemPrompt, convertToLlm, streamFn, tools })
+      → new AgentSession({ agent, sessionManager, settingsManager, modelRegistry, cwd })
+      → AgentSession.constructor 自动: this._unsubscribeAgent = agent.subscribe(this._handleAgentEvent)   # agent-session.ts:352
+      → (可选) session.subscribe(listener)    # 管道A:UI/测试收 AgentSessionEvent(含 compaction_start/end)
+```
+
+**一轮「能跑」的消息级管线**
+```
+sendUserMessage("你好")                                        # :1354
+ └→ prompt(text) → _runAgentPrompt([userMsg])                 # :997/:947
+     └→ agent.prompt(userMsg)                                 # Agent 真入口(Phase 2 实装)
+         └→ runAgentLoop(prompts, snapshot, cfg, e⇒processEvents(e,signal), signal, streamFn)
+             ├─ agent_start / turn_start
+             ├─ message_start/end(userMsg)  ─┐
+             ├─ message_end(assistant 流式)  ├→ Agent.processEvents → await 每个 listener
+             ├─ tool_execution_*             │       └─ AgentSession._handleAgentEvent(:487)
+             ├─ message_start/end(toolResult)│            └─ message_end:按类型 appendMessage /
+             └─ turn_end / agent_end(带 willRetry)          appendCustomMessageEntry → SessionManager 树
+         └→ 返回 newMessages → agent.state.messages 并入              (生产持久化在 :517-534)
+     └→ agent.prompt 结束后, while(await _handlePostAgentRun())   # :950/_handlePostAgentRun:958
+         ├─ _isRetryableError? → _prepareRetry(续跑)              (Phase 4)
+         ├─ _checkCompaction(最后 assistant) → _runAutoCompaction  (Phase 3)
+         │    └→ appendCompaction(:1736) → buildSessionContext(:1738) → agent.state.messages=ctx(:1739)  ← 跨轮生效点
+         └─ agent.continue()                                      (有排队队列才续)
+```
+
+**关键交互表(AgentSession 调 Agent 的真实面 ↔ 走教学 runAgentLoop 的什么)**
+| AgentSession | Agent 提供 | 教学 loop 落点 |
+|---|---|---|
+| `sendUserMessage`/`prompt` | `prompt(input)` | `runAgentLoop(prompts, …)` 的 prompts |
+| `_runAgentPrompt` 里的循环 `continue` | `continue()` | `steeringQueue`/`followUpQueue` drain → 下一轮 |
+| `_handlePostAgentRun` | `hasQueuedMessages()` | 两队列 `hasItems()` |
+| `_handleAgentEvent` 持久化 | `subscribe`/`processEvents` | loop 逐事件 `emit` → 摊给 listener |
+| `_runAutoCompaction`/`compact` 覆盖上下文 | `state.messages`(直接赋值) | loop 外替换,下一轮 snapshot 即新上下文 |
+| `_installAgentToolHooks`(:414) | `beforeToolCall`/`afterToolCall` | `createLoopConfig` 透传 |
+
+**两个状态同步点(必须对齐)**
+1. **事件落树**:每个 `message_end` → `_handleAgentEvent` → `sessionManager.appendMessage`(AgentSession 侧);
+2. **轮末转录**:`runAgentLoop` 返回 `newMessages` → `agent.state.messages.push(...)`(Agent 侧);压缩后 `agent.state.messages = sessionContext.messages`(两处都对齐树里压缩节点后的路径)。
+
+**时序要点**:压缩不在事件回调里做——`_handleAgentEvent` 对 agent_end 只广播;真正 `_checkCompaction` 是在 `agent.prompt` **返回之后**,由 `_runAgentPrompt` 的 `while(_handlePostAgentRun())` 判断,拿 `_lastAssistantMessage` 做判定;这就是"压缩在两轮之间、prompt 提交前"的精确位置。
+
+#### 4.5 纪律与验收
+
+- **不发明名字**:每步方法名 = 生产 `agent-session.ts` 或 `agent.ts` 原名 + 行号锚点;注释注明"教学版裁掉哪个子系统"。
+- **本轮代码纪律**:只落骨架/注释/桩,不写生逻辑;每个 TODO 都标 Phase 与生产行号。
+- 闭环验收(Phase 4 终态):**发消息能跑 → 超窗自动压 → 重启能续上**,三件事全由生产方法名串联。
 
 ### Tier 5(进阶,了解即可):harness 的 `SessionStorage` 抽象(与本教学仓无关)
 

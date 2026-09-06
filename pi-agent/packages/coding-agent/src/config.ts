@@ -66,3 +66,64 @@ export function getDocsPath(): string {
 export function getExamplesPath(): string {
 	return resolve(join(getPackageDir(), "examples"));
 }
+
+/** Get path to package.json */
+export function getPackageJsonPath(): string {
+	return join(getPackageDir(), "package.json");
+}
+
+
+// =============================================================================
+// App Config (from package.json piConfig)
+// =============================================================================
+
+interface PackageJson {
+	name?: string;
+	version?: string;
+	piConfig?: {
+		name?: string;
+		configDir?: string;
+	};
+}
+
+let pkg: PackageJson = {};
+try {
+	pkg = JSON.parse(readFileSync(getPackageJsonPath(), "utf-8")) as PackageJson;
+} catch (e: unknown) {
+	const err = e as NodeJS.ErrnoException;
+	if (err.code !== "ENOENT") throw e;
+}
+
+const piConfigName: string | undefined = pkg.piConfig?.name;
+export const PACKAGE_NAME: string = pkg.name || "@earendil-works/pi-coding-agent";
+export const APP_NAME: string = piConfigName || "pi";
+export const APP_TITLE: string = piConfigName ? APP_NAME : "π";
+export const CONFIG_DIR_NAME: string = pkg.piConfig?.configDir || ".pi";
+export const VERSION: string = pkg.version || "0.0.0";
+
+// e.g., PI_CODING_AGENT_DIR or TAU_CODING_AGENT_DIR
+export const ENV_AGENT_DIR = `${APP_NAME.toUpperCase()}_CODING_AGENT_DIR`;
+export const ENV_SESSION_DIR = `${APP_NAME.toUpperCase()}_CODING_AGENT_SESSION_DIR`;
+
+export function expandTildePath(path: string): string {
+	return normalizePath(path);
+}
+
+// =============================================================================
+// User Config Paths (~/.pi/agent/*)
+// =============================================================================
+
+/** Get the agent config directory (e.g., ~/.pi/agent/) */
+export function getAgentDir(): string {
+	const envDir = process.env[ENV_AGENT_DIR];
+	if (envDir) {
+		return expandTildePath(envDir);
+	}
+	return join(homedir(), CONFIG_DIR_NAME, "agent");
+}
+
+
+/** Get path to sessions directory */
+export function getSessionsDir(): string {
+	return join(getAgentDir(), "sessions");
+}
