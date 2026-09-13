@@ -51,7 +51,7 @@
 | 03 消息系统 | `CompactionSummaryMessage` / `BranchSummaryMessage` 类型 + convert 规则已就位 | ✅ |
 | 04 事件系统 | `emit` 分叉、agent_end 可达 | ⏳ Compaction / 分支摘要的**触发集成**仍走 04(未接会话层,顺延) |
 | `core/compaction/{index,compaction,utils,branch-summarization}.ts` | Tier-2 阶段 A **+ 阶段 B 全落地**(`compact()`/`TURN_PREFIX_SUMMARIZATION_PROMPT`+并行/`formatFileOperations`/`computeFileLists`) | ✅ 20 例测试全绿 |
-| `core/session-manager.ts` | `buildSessionContext`(重建 compaction/branch_summary)+ 纯函数 `getBranchPath`/`getEntryById` | ✅ |
+| `core/session-manager.ts` | `buildSessionContext` + `getLatestCompactionEntry` + 生产 `SessionManager` 类(`getBranch`/`getEntry`/`getSessionName`)+ `ReadonlySessionManager` | ✅ |
 | 测试 | 全仓 **8 文件 54 例**(compaction.test.ts 20 + context-engine.test.ts 11 + 其余既有) | ✅ Tier-1 欠账已清偿 |
 
 ---
@@ -71,7 +71,7 @@ packages/coding-agent/src/
     compaction.ts ✅           shouldCompact / findCutPoint / prepareCompaction / generateSummary / compact / turnPrefix
     branch-summarization.ts ✅ collectEntriesForBranchSummary(LCA) + prepareBranchEntries + generateBranchSummary
     utils.ts ✅                serializeConversation / formatFileOperations / computeFileLists / SUMMARIZATION_SYSTEM_PROMPT
-  core/session-manager.ts ✅   SessionEntry 类型家族 + buildSessionContext + getBranchPath/getEntryById
+  core/session-manager.ts ✅   SessionEntry 类型家族 + buildSessionContext + getLatestCompactionEntry + SessionManager 类
 packages/coding-agent/test/
   compaction.test.ts ✅        ③ Compaction 8 例 + ④ 分支摘要 12 例,全绿
   tools/write.test.ts ✅       既有
@@ -291,7 +291,7 @@ export function collectEntriesForBranchSummary(
     targetId: string,
 ): CollectEntriesResult   // { entries: SessionEntry[]; commonAncestorId: string | null }
 ```
-算法(生产 102-125):两侧各取分支路径(`session.getBranch(id)`,root-first);目标路径从后往前找第一个也在旧路径里的节点 = **公共祖先**(`commonAncestorId`);旧路径从叶子向上爬到公共祖先(不含)→ 被放弃的分支 `entries`。`oldLeafId` 为空 → `{ entries: [], commonAncestorId: null }`。教学版以纯函数 `getBranchPath`/`getEntryById` 组装最小视图 `ReadonlySessionManager` 落地(见 §十 Tier 3)。
+算法(生产 102-125):两侧各取分支路径(`session.getBranch(id)`,root-first);目标路径从后往前找第一个也在旧路径里的节点 = **公共祖先**(`commonAncestorId`);旧路径从叶子向上爬到公共祖先(不含)→ 被放弃的分支 `entries`。`oldLeafId` 为空 → `{ entries: [], commonAncestorId: null }`。教学版直接传真实 `SessionManager`(它满足生产 `ReadonlySessionManager`)。
 
 ### 7.2 摘要产物(✅ 已落地,依赖 03)
 
@@ -357,7 +357,7 @@ export function collectEntriesForBranchSummary(
 7. ✅ **单测**(compaction.test.ts ③,8 例):`findCutPoint`(尾部连续 toolResult 不切)/ `prepareCompaction`(isSplitTurn 判定)/ `generateSummary`(mock 出 6-section)/ `compact()` 编排 / 端到端两轮 `<summary>` user。
 
 **Tier 3：④分支摘要(依赖 03;会话树后续)——对齐生产 `core/compaction/branch-summarization.ts`(✅ 已完成并单测/端到端覆盖)**
-1. ✅ `collectEntriesForBranchSummary(session, oldLeafId, targetId): CollectEntriesResult`(生产 :102)——session-manager 暂无 `getBranch`,以纯函数 `getBranchPath`/`getEntryById` 组装最小视图 `ReadonlySessionManager` 落地,**签名保持生产形**、LCA 算法逐行同形;会话树齐后真实 SessionManager 直接满足该接口。
+1. ✅ `collectEntriesForBranchSummary(session, oldLeafId, targetId): CollectEntriesResult`(生产 :102)——session 形参类型 = 生产 `ReadonlySessionManager`(`Pick<SessionManager,…>`,session-manager.ts:186),真实 `SessionManager` 直接满足,**签名保持生产形**、LCA 算法逐行同形。
 2. ✅ `prepareBranchEntries(entries, tokenBudget)`(生产 :189)——两遍式:pass1 全量收集嵌套 `branch_summary` 的 details 文件累积(`fromHook !== true` 过滤扩展摘要);pass2 从最新往回收、预算内保最近上下文,摘要类条目超预算"10% 余量"内强塞。
 3. ✅ `generateBranchSummary(...)`(生产 :287,5-section 无 Critical Context、`maxTokens=2048`)+ 03 工厂 `createBranchSummaryMessage(summary, fromId, timestamp)`(messages:134)——前置拼 `BRANCH_SUMMARY_PREAMBLE`、末尾拼 `computeFileLists`/`formatFileOperations` 文件标签;aborted/error 两路可探测。
 4. ✅ **单测**(compaction.test.ts 描述块 ④,12 例):

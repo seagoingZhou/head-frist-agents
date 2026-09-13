@@ -323,6 +323,22 @@ export function parseSessionEntries(content: string): FileEntry[] {
 }
 
 /**
+ * 取路径上最近一条压缩 entry(没有则 null)。
+ *
+ * 用途:压缩判定前先看"最近压过没有"——若当前 assistant 消息早于压缩点,
+ * 说明它挂在压缩前的旧 usage 上,不能再据此触发压缩(否则刚压完就被旧 token 数顶爆,见 06 §6.3)。
+ * 缺省从末尾往前找,即"最新一次"。
+ */
+export function getLatestCompactionEntry(entries: SessionEntry[]): CompactionEntry | null {
+	for (let i = entries.length - 1; i >= 0; i--) {
+		if (entries[i].type === "compaction") {
+			return entries[i] as CompactionEntry;
+		}
+	}
+	return null;
+}
+
+/**
  * 从会话树的 entry 构建 LLM 上下文(树的"压扁出口",见 06 §五)。
  * 路径遍历:从 leafId 沿 parentId 上溯到 root,收集的路径 reverse 成 root-first;
  * 路径上的 entry 用"根 → 叶"顺序按类型分派处理。沿路径处理 compaction 与分支摘要。
@@ -467,6 +483,29 @@ export function getDefaultSessionDir(cwd: string, agentDir: string = getDefaultA
 
 /** 流式读会话文件时每次 readSync 的缓冲大小(1MB,兼顾大文件性能与内存)。 */
 const SESSION_READ_BUFFER_SIZE = 1024 * 1024;
+
+/**
+ * 会话管理器的只读视图 —— 依赖会话但不该改它的模块(压缩/分支摘要等)只拿这个类型。
+ *
+ * 用 `Pick` 从 SessionManager 上"挑"出纯读方法,而不是另写一份接口:
+ * 名字与实现只有一处,新增读方法时改这里一处即可(生产 session-manager.ts:186)。
+ */
+export type ReadonlySessionManager = Pick<
+	SessionManager,
+	| "getCwd"
+	| "getSessionDir"
+	| "getSessionId"
+	| "getSessionFile"
+	| "getLeafId"
+	| "getLeafEntry"
+	| "getEntry"
+	| "getLabel"
+	| "getBranch"
+	| "getHeader"
+	| "getEntries"
+	| "getTree"
+	| "getSessionName"
+>;
 
 /**
  * 会话管理器:把对话历史当作"只追加的树"存在 JSONL 文件里。
@@ -898,6 +937,21 @@ export class SessionManager {
 		return children;
 	}
 
+	/**
+	 * 取当前会话名(取最近一条 session_info 的 name)。
+	 * 从末尾往前找:空名视作"显式清空标题"→ 返回 undefined(生产 session-manager.ts:1042)。
+	 */
+	getSessionName(): string | undefined {
+		const entries = this.getEntries();
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const entry = entries[i];
+			if (entry.type === "session_info") {
+				return entry.name?.trim() || undefined;
+			}
+		}
+		return undefined;
+	}
+
 	/** 取某条 entry 的标签(书签);没有则为 undefined。直接读 labelsById 缓存,不落盘。 */
 	getLabel(id: string): string | undefined {
 		return this.labelsById.get(id);
@@ -1208,27 +1262,25 @@ export class SessionManager {
 		return undefined;
 	}
 
-}
-
-
-
-
-/** 沿 parentId 从 leaf 上溯到 root,返回 root-first 路径(纯函数版;生产 SessionManager.getBranch 是方法,会话树齐了可直接对齐)。 */
-export function getBranchPath(entries: SessionEntry[], leafId: string | null): SessionEntry[] {
-	const byId = new Map(entries.map((entry) => [entry.id, entry]));
-	const path: SessionEntry[] = [];
-	let current: SessionEntry | undefined = leafId ? byId.get(leafId) : undefined;
-	while (current) {
-		path.unshift(current); // unshift 插到头部 → 最后得到 root-first
-		current = current.parentId ? byId.get(current.parentId) : undefined;
+	/**
+	 * 新建一个会话(落盘)。
+	 * @param cwd 工作目录(写入会话 header)。
+	 * @param sessionDir 可选的会话目录;省略则用默认目录(~/.pi/agent/sessions/<编码后的 cwd>/)。
+	 */
+	static create(cwd: string, sessionDir?: string, options?: NewSessionOptions): SessionManager {
+		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);
+		return new SessionManager(cwd, dir, undefined, true, options);
 	}
-	return path;
+
+	/** 新建一个内存会话(不落盘)。 */
+	static inMemory(cwd: string = process.cwd()): SessionManager {
+		return new SessionManager(cwd, "", undefined, false);
+	}
+
 }
 
-/** 按 id 查一条 entry(纯函数;分支摘要的最小会话视图用,配合 getBranchPath 组装 ReadonlySessionManager)。 */
-export function getEntryById(entries: SessionEntry[], id: string): SessionEntry | undefined {
-	return entries.find((entry) => entry.id === id);
-}
+
+
 
 function parseSessionEntryLine(line: string): FileEntry | null {
 	if (!line.trim()) return null;
@@ -1287,3 +1339,4 @@ export function loadEntriesFromFile(filePath: string): FileEntry[] {
 
 	return entries;
 }
+

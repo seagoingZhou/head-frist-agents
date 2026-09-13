@@ -81,6 +81,10 @@ export function agentLoop(
 
 }
 
+/**
+ * 跑一轮 agent loop:把 prompts 追加进上下文快照后进入 `runLoop`,一直跑到没有更多工具调用、也没有排队消息。
+ * 返回本次新增的消息(prompts + assistant + toolResult)。事件经 `emit` 逐条发出。
+ */
 export async function runAgentLoop(
 	prompts: AgentMessage[],
 	context: AgentContext,
@@ -105,6 +109,36 @@ export async function runAgentLoop(
     return newMessages;
 }
 
+/**
+ * 从"已有上下文"续跑(不追加新 prompts):先守守卫——上下文为空、或末条是 assistant 时直接抛错——
+ * 然后进 `runLoop` 产出下一个 assistant。返回本次新增的消息。
+ * (对应 `Agent.continue()` 在末条非 assistant 时走的 `runContinuation()` 路径。)
+ */
+export async function runAgentLoopContinue(
+	context: AgentContext,
+	config: AgentLoopConfig,
+	emit: AgentEventSink,
+	signal?: AbortSignal,
+	streamFn?: StreamFn,
+): Promise<AgentMessage[]> {
+	if (context.messages.length === 0) {
+		throw new Error("Cannot continue: no messages in context");
+	}
+
+	if (context.messages[context.messages.length - 1].role === "assistant") {
+		throw new Error("Cannot continue from message role: assistant");
+	}
+
+	const newMessages: AgentMessage[] = [];
+	const currentContext: AgentContext = { ...context };
+
+	await emit({ type: "agent_start" });
+	await emit({ type: "turn_start" });
+
+	await runLoop(currentContext, newMessages, config, signal, emit, streamFn);
+	return newMessages;
+}
+
 function createAgentStream(): EventStream<AgentEvent, AgentMessage[]> {
     return new EventStream<AgentEvent, AgentMessage[]>(
         (event:AgentEvent) => event.type === "agent_end",
@@ -115,93 +149,156 @@ function createAgentStream(): EventStream<AgentEvent, AgentMessage[]> {
 
 
 
-// 主循环 AgentLoop
-
+/**
+ * 主循环(两层 while):
+ * - 内层:每轮「注入 pending → 流式出 assistant → 执行工具 → 发 turn_end →
+ *   prepareNextTurn 覆盖下轮状态 → shouldStopAfterTurn 判定停 → 重新轮询 steering」;
+ * - 外层:内层因"无更多工具调用、无 steering"停下后,再查 follow-up;有则塞回内层继续,无则退出。
+ * 终止方式:assistant 报错/被中止(提前 return)、shouldStopAfterTurn 判定停、或内外层均无更多消息。
+ */
 async function runLoop(
-    currentAgentContext: AgentContext,
+    initialContext: AgentContext,
     newMessages: AgentMessage[],
-    config: AgentLoopConfig,
+    initialConfig: AgentLoopConfig,
     signal: AbortSignal | undefined,
     emit: AgentEventSink,
     streamFn?: StreamFn
 ) : Promise<void> {
 
-    let hasMoreToolCalls = true;
-    let firstTurn = true;
-    let queuedMessages : AgentMessage[] = (await config.getQueuedMessages?.()) || [];
+    let currentContext = initialContext;
+	let config = initialConfig;
+	let firstTurn = true;
+	// 起始先取一次 steering 消息:用户可能在等待期间打了字,应尽早注入
+	let pendingMessages: AgentMessage[] = (await config.getSteeringMessages?.()) || [];
 
-    while(hasMoreToolCalls || queuedMessages.length > 0) {
-        if (!firstTurn){
-            await emit({type:"turn_start"});
-        } else{
-            firstTurn = false;
-        }
+    while (true) {
+        let hasMoreToolCalls = true;
 
-        // 在每轮循环里、生成LLM助手回复前，把 queuedMessages 里的消息先排队注入上下文
-        if (queuedMessages.length > 0){
-            for (const message of queuedMessages){
-                await emit({type:"message_start",message});
-                await emit({type:"message_end",message});
-                currentAgentContext.messages.push(message);
-                newMessages.push(message);
+        // 内层循环:处理工具调用与 steering 消息(每轮 = 一次 assistant 回复 + 其工具执行)
+        while(hasMoreToolCalls || pendingMessages.length > 0) {
+            if (!firstTurn){
+                await emit({type:"turn_start"});
+            } else{
+                firstTurn = false;
             }
-            queuedMessages = [];
-        }
-        
 
-        // LLM助手 流式回复
-        const assistantMessage = await streamAssistantResponse(
-            currentAgentContext,
-            config,
-            signal,
-            emit,
-            streamFn
-        )
-        newMessages.push(assistantMessage)
+            // 在每轮循环里、生成LLM助手回复前，把 pendingMessages 里的消息先排队注入上下文
+            if (pendingMessages.length > 0){
+                for (const message of pendingMessages){
+                    await emit({type:"message_start",message});
+                    await emit({type:"message_end",message});
+                    initialContext.messages.push(message);
+                    newMessages.push(message);
+                }
+                pendingMessages = [];
+            }
+            
 
-        // 
-        if (assistantMessage.stopReason === "error" || assistantMessage.stopReason === "aborted"){
-            await emit({type:"turn_end", message:assistantMessage, toolResults:[]})
-            await emit({type:"agent_end",messages:newMessages})
-            return
-        }
-
-        const toolCalls = assistantMessage.content
-                                            .filter(
-                                                (c) =>
-                                                    c.type === "toolCall"
-                                            );
-
-        const toolResults : ToolResultMessage[] = [];
-        hasMoreToolCalls = false;
-        if (toolCalls.length > 0) {
-             const executedToolBatch = await excuteToolCalls(
-                currentAgentContext,
-                assistantMessage,
+            // LLM助手 流式回复
+            const assistantMessage = await streamAssistantResponse(
+                initialContext,
                 config,
                 signal,
-                emit
+                emit,
+                streamFn
             )
-            toolResults.push(...executedToolBatch.messages);
-            hasMoreToolCalls = !executedToolBatch.terminate;
+            newMessages.push(assistantMessage)
 
-            for (const result of toolResults) {
-                currentAgentContext.messages.push(result);
-                newMessages.push(result);
+            // assistant 报错或被中止 → 收尾本回合(turn_end)并直接发 agent_end,不再处理工具调用
+            if (assistantMessage.stopReason === "error" || assistantMessage.stopReason === "aborted"){
+                await emit({type:"turn_end", message:assistantMessage, toolResults:[]})
+                await emit({type:"agent_end",messages:newMessages})
+                return
             }
+
+            const toolCalls = assistantMessage.content
+                                                .filter(
+                                                    (c) =>
+                                                        c.type === "toolCall"
+                                                );
+
+            const toolResults : ToolResultMessage[] = [];
+            hasMoreToolCalls = false;
+            if (toolCalls.length > 0) {
+                const executedToolBatch = await excuteToolCalls(
+                    initialContext,
+                    assistantMessage,
+                    config,
+                    signal,
+                    emit
+                )
+                toolResults.push(...executedToolBatch.messages);
+                hasMoreToolCalls = !executedToolBatch.terminate;
+
+                for (const result of toolResults) {
+                    initialContext.messages.push(result);
+                    newMessages.push(result);
+                }
+            }
+
+            await emit(
+                {
+                    type : "turn_end",
+                    message : assistantMessage,
+                    toolResults
+                }
+            )
+
+			// 回合收尾:构造"下一回合决策"用的上下文,交给 prepareNextTurn / shouldStopAfterTurn
+            const nextTurnContext = {
+				message: assistantMessage,
+				toolResults,
+				context: currentContext,
+				newMessages,
+			};
+
+            // prepareNextTurn:允许替换下一回合的 context / model / thinking;返回非空则覆盖
+            const nextTurnSnapshot = await config.prepareNextTurn?.(nextTurnContext);
+			if (nextTurnSnapshot) {
+				currentContext = nextTurnSnapshot.context ?? currentContext;
+				config = {
+					...config,
+					model: nextTurnSnapshot.model ?? config.model,
+					// thinkingLevel:"off" → reasoning 置 undefined(关思考);显式给了就覆盖
+					reasoning:
+						nextTurnSnapshot.thinkingLevel === undefined
+							? config.reasoning
+							: nextTurnSnapshot.thinkingLevel === "off"
+								? undefined
+								: nextTurnSnapshot.thinkingLevel,
+				};
+			}
+
+			// shouldStopAfterTurn:判定"本回合后应优雅停止"→ 直接发 agent_end 返回,不再发起新的 provider 请求
+			if (
+				await config.shouldStopAfterTurn?.({
+					message: assistantMessage,
+					toolResults,
+					context: currentContext,
+					newMessages,
+				})
+			) {
+				await emit({ type: "agent_end", messages: newMessages });
+				return;
+			}
+
+			// 重新轮询 steering:本轮工具执行期间用户可能又插了话,作为下一轮内循环的 pending
+			pendingMessages = (await config.getSteeringMessages?.()) || [];
         }
 
-        await emit(
-            {
-                type : "turn_end",
-                message : assistantMessage,
-                toolResults
-            }
-        )
+        // 外层:agent 本将停止 —— 检查 follow-up(后续)消息
+		const followUpMessages = (await config.getFollowUpMessages?.()) || [];
+		if (followUpMessages.length > 0) {
+			// 有 follow-up → 作为 pending 注入,继续内层循环
+			pendingMessages = followUpMessages;
+			continue;
+		}
 
-        queuedMessages = (await config.getQueuedMessages?.()) || [];
-
+		// 既无 steering 也无 follow-up → 结束外层循环
+		break;
     }
+
+    
 
     await emit(
         {

@@ -11,14 +11,13 @@ import {
 	type CompactionPreparation,
 } from "../src/core/compaction/compaction.ts";
 import { DEFAULT_COMPACTION_SETTINGS, type CompactionSettings } from "../src/core/compaction/compaction.ts";
-import type { SessionEntry } from "../src/core/session-manager.ts";
-import { buildSessionContext, getBranchPath, getEntryById } from "../src/core/session-manager.ts";
+import type { ReadonlySessionManager, SessionEntry } from "../src/core/session-manager.ts";
+import { buildSessionContext, getLatestCompactionEntry } from "../src/core/session-manager.ts";
 import { convertToLlm, createCompactionSummaryMessage } from "../src/core/messages.ts";
 import {
 	collectEntriesForBranchSummary,
 	generateBranchSummary,
 	prepareBranchEntries,
-	type ReadonlySessionManager,
 } from "../src/core/compaction/branch-summarization.ts";
 import { computeFileLists, SUMMARIZATION_SYSTEM_PROMPT } from "../src/core/compaction/utils.ts";
 
@@ -253,11 +252,21 @@ describe("上下文工程 ④ 分支摘要(collect → prepare → generate + �
 			asst("b2", "b1", "b2"),
 			mkEntry("b3", "b2", createUserMessage("b3")),
 		];
-		// 最小会话视图:用 session-manager 的纯函数 getBranchPath/getEntryById 组装
-		const session: ReadonlySessionManager = {
-			getBranch: (id) => getBranchPath(entries, id),
-			getEntry: (id) => getEntryById(entries, id),
-		};
+		// 测试夹具:分支摘要只用到 getBranch/getEntry 两个只读方法,故只实现这两个再断言补齐类型
+		// (ReadonlySessionManager 是生产 session-manager.ts:186 从真实 SessionManager Pick 出的 13 个读方法)
+		const byId = new Map(entries.map((e) => [e.id, e]));
+		const session = {
+			getBranch: (fromId?: string) => {
+				const path: SessionEntry[] = [];
+				let current: SessionEntry | undefined = fromId ? byId.get(fromId) : undefined;
+				while (current) {
+					path.push(current);
+					current = current.parentId ? byId.get(current.parentId) : undefined;
+				}
+				return path.reverse();
+			},
+			getEntry: (id: string) => byId.get(id),
+		} as unknown as ReadonlySessionManager;
 
 		const result = collectEntriesForBranchSummary(session, "a2", "b3");
 
@@ -267,7 +276,7 @@ describe("上下文工程 ④ 分支摘要(collect → prepare → generate + �
 	});
 
 	it("无旧位置(oldLeafId=null)→ 空结果", () => {
-		const session: ReadonlySessionManager = { getBranch: () => [], getEntry: () => undefined };
+		const session = { getBranch: () => [], getEntry: () => undefined } as unknown as ReadonlySessionManager;
 		expect(collectEntriesForBranchSummary(session, null, "b3")).toEqual({ entries: [], commonAncestorId: null });
 	});
 
@@ -468,10 +477,19 @@ describe("上下文工程 ④ 分支摘要(collect → prepare → generate + �
 		const b1 = mkEntry("b1", "r0", createUserMessage("B 分支:看仪表盘"));
 		const b2 = mkEntry("b2", "b1", createUserMessage("继续 B"));
 		const all = [r0, a1, a2, b1, b2];
-		const session: ReadonlySessionManager = {
-			getBranch: (id) => getBranchPath(all, id),
-			getEntry: (id) => getEntryById(all, id),
-		};
+		const byId = new Map(all.map((e) => [e.id, e]));
+		const session = {
+			getBranch: (fromId?: string) => {
+				const path: SessionEntry[] = [];
+				let current: SessionEntry | undefined = fromId ? byId.get(fromId) : undefined;
+				while (current) {
+					path.push(current);
+					current = current.parentId ? byId.get(current.parentId) : undefined;
+				}
+				return path.reverse();
+			},
+			getEntry: (id: string) => byId.get(id),
+		} as unknown as ReadonlySessionManager;
 
 		// 1) 从 a2 导航到 b2:被放弃的是 A 分支 a1→a2,LCA = r0
 		const { entries, commonAncestorId } = collectEntriesForBranchSummary(session, "a2", "b2");

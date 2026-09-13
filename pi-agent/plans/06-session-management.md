@@ -12,7 +12,7 @@
 | `packages/coding-agent/src/core/session-manager.ts` | coding-agent 的 `SessionManager`(1578 行);纯函数 `buildSessionContext`、entry 类型、JSONL 持久化 | `SessionEntry` 联合:140、**`buildSessionContext`:325**、`SessionStorage` 无关的**`SessionManager` 类:758**、`_persist`:909、`_appendEntry`:938、`appendCompaction`:991、`getBranch`:1152、`branch`:1244、**`branchWithSummary`:1265**、`createBranchedSession`:1289 |
 | `packages/coding-agent/src/core/compaction/branch-summarization.ts` | 分支摘要生成(出入参参照 05) | `generateBranchSummary` |
 
-行号核对日期:2026-08-30。生产参照仓库为 `pi`;本教学仓(coding-agent)已落地其中的**纯函数部分**(entry 类型 + `buildSessionContext` + `getBranchPath`/`getEntryById`),`SessionManager` 类与存储属生产侧专有,见 §七 末尾对照。
+行号核对日期:2026-09。生产参照仓库为 `pi`;本教学仓(coding-agent)已落地 **entry 类型 + 纯函数 `buildSessionContext`/`getLatestCompactionEntry` + 完整 `SessionManager` 类 + JSONL 存储**(对应 §九 Tier 1-3);agent 侧集成(`Agent` / `AgentSession`)为**骨架**(Tier 4 Phase 0/1)。⚠️ **命名纪律:禁止自造名**,教学任何字段/方法/类型名必须能在生产找到同名——历史自造名(`getBranchPath`/`getEntryById`、`CompatThinkingLevel`)均已消除。
 
 ---
 
@@ -406,16 +406,21 @@ e6 (assistant)
 
 这两种安排的含义:(1) 想做 Web 版 Pi,可以自己用 mysql 实现 `SessionStorage`,agent-core 其余逻辑不动;(2) 但**不能**拿 coding-agent 的 `SessionManager` 去套 agent-core 的接口——签名不兼容。这就是"接口存在但不强制复用"的落地路径:**各自实现**,而非统一继承。
 
-### 对照本教学仓(coding-agent 已落地 / 待落地)
+### 对照本教学仓(coding-agent 实现进度,2026-09)
 
 | 组件 | 本仓库(coding-agent) | 生产(coding-agent) |
 |---|---|---|
-| `SessionEntry` 9 种类型 + `buildSessionContext` 纯函数 | ✅ 已落地(`session-manager.ts`,含 `getBranchPath`/`getEntryById` 纯函数辅助) | 同构 |
+| `SessionEntry` 9 种类型 + `buildSessionContext` 纯函数 | ✅ 已落地(`session-manager.ts`) | 同构 |
 | `branch-summarization.ts`(collect/prepare/generate) | ✅ 已落地(05 §七) | 同构 |
-| `SessionManager` 类 + `_persist`/`_rewriteFile` + `appendXXX`/`branch`/`branchWithSummary` | ⏳ 未落地(05 标记"会话写入 + agent 集成"不在当前实现,待会话层) | 完整 |
+| `SessionManager` 类 + `_persist`/`_rewriteFile` + `appendXXX`/`branch`/`branchWithSummary` + JSONL 加载/迁移 | ✅ 已落地(Tier 2/3) | 完整 |
+| 单测 `test/session-manager.test.ts` | ⏳ 未创建(Tier 2/3 的验证清单尚未落测) | — |
+| `getSessionName` / `getLatestCompactionEntry` | ⏳ 缺(生产 `session-manager.ts:1042` / `:311`) | 有 |
+| `Agent`(`packages/agent`)+ `AgentSession`(`core`) | ⏳ **骨架**(Tier 4 Phase 0/1;`Agent.prompt` 未接 `runAgentLoop`) | 完整 |
 | harness `SessionStorage` + `JsonlSessionStorage`/`InMemorySessionStorage` | ⏳ 未落地(agent-core 通用会话层,与本仓库无关) | 完整 |
 
-也就是说,本章前半(树的结构、纯函数 buildSessionContext)在本仓库已经能跑;后半(类、落盘策略、接口)是接下来的会话层目标,行号可直接引用生产作参照。
+✅ **命名对齐已完成**:教学曾用纯函数 `getBranchPath`/`getEntryById`(自造名),现已删除;改用生产 `ReadonlySessionManager`(`session-manager.ts:186` = `Pick<SessionManager,… "getBranch" | "getEntry" …>`,方法实现 `:1152`/`:1095`,语义:含自己、root-first)。`collectEntriesForBranchSummary` 直接吃真实 `SessionManager`。
+
+也就是说:**会话层(Tier 1-3)在本仓库已可运行**;agent 侧集成(Tier 4)是骨架,待 Phase 2 起填实。
 
 ---
 
@@ -458,7 +463,7 @@ e6 (assistant)
 
 1. **9 种 `SessionEntry` 类型 + `SessionContext`**(生产 :46-186)。教学落地 ✅(`SessionEntryBase`/`SessionEntry` 联合 9 种,`buildSessionContext` 返回 `{messages, thinkingLevel, model}`)。**验证**:已随 compaction.test.ts 端到端覆盖;应补一条"9 种类型结构完整性"单测(每个 type 标签 + 必填字段齐备)。
 2. **纯函数 `buildSessionContext(entries, leafId?, byId?)`**(生产 :325):路径遍历(parentId 上溯 → reverse)→ 按类型分派 → 状态覆盖式提取(`model` 初值 null,:367;`thinkingLevel` 默认 "off")→ compaction 选择性收集(:401-424,`firstKeptEntryId` 前跳过)。教学落地 ✅。**验证**:compaction.test.ts 已有端到端;建议补一份**纯分派遣型表**单测——9 种 entry 各放一条,断言各自的去处(进 messages / 改状态 / 跳过)。
-3. **`getBranchPath`/`getEntryById` 纯函数**:对齐生产 `SessionManager.getBranch`(:1152)的路径语义(含自己、root-first、支持 null → 空)。教学落地 ✅(branch-summarization 的最小会话视图用)。**验证**:compaction.test.ts ④ 已覆盖 LCA 采集。
+3. **最小会话视图**:对齐生产 `ReadonlySessionManager`(`session-manager.ts:186` = `Pick<SessionManager,… "getBranch" | "getEntry" …>`)——方法名就是 **`getBranch`/`getEntry`**(方法实现 `:1152`/`:1095`;语义:含自己、root-first);`collectEntriesForBranchSummary` 吃这个视图。✅ 教学已落地该类型并从 `session-manager.ts` 导出;自造名 `getBranchPath`/`getEntryById` 已删除。**验证**:compaction.test.ts ④ 的 LCA 采集(测试里组装最小只读视图)。
 
 ### Tier 2:SessionManager 类与内存树(✅ 已完成,2026-09 复核)
 
@@ -469,7 +474,7 @@ e6 (assistant)
 1. **构造 + `newSession()` + `setSessionFile()`**(生产 :771-850)。
    - `newSession(options?)`:校验 id(`assertValidSessionId`)、造 `SessionHeader{type:"session",version:3,id,timestamp,cwd,parentSession}`(:831-838)、清 `fileEntries=[header]`/`byId`/`leafId=null`/`flushed=false`;`persist` 时生成 `fileTimestamp_sessionId.jsonl` 文件名(:846-847)。
    - `setSessionFile()`(:793):有文件 `loadEntriesFromFile` → 空/损坏就重建重写(:800-806)→ 迁版本迁移重写(:812-813)→ `_buildIndex()` → `flushed=true`。
-   - **验证**(单测,`test/session-manager.test.ts`):`newSession()` 后 `leafId=null`、header 版本=3;`setSessionFile` 指向不存在路径时重建 header。
+   - **验证**(单测,`test/session-manager.test.ts` ⏳ **尚未创建**):`newSession()` 后 `leafId=null`、header 版本=3;`setSessionFile` 指向不存在路径时重建 header。
 2. **`_buildIndex()`**(生产 :852):清空索引后遍历 `fileEntries`,跳过 header,`byId.set` + 最后一条当 `leafId`,label 进 `labelsById`。**验证**:加载一段线性链 → leafId=最后一条、`getEntry` 全部可查。
 3. **`_appendEntry(entry)`**(生产 :938):`fileEntries.push + byId.set + leafId=entry.id + _persist(entry)`——**这是所有 appendXXX 的唯一收敛点**。**验证**(配合 Tier 3 前先传 `persist:false` 只测内存):append 一条 → leafId 前移、`getEntries()` 长度 +1、旧节点未被改动(append-only 断言)。
 
@@ -483,7 +488,7 @@ e6 (assistant)
 
 **阶段 C 查询与遍历**
 
-9. **基础查询**:`getLeafId`/`getLeafEntry`/`getEntry`/`getChildren`/`getLabel`(:1087-1117)。`getChildren` 是"认父不认子"的反向查询——遍历 `byId.values()` 找 parentId 匹配,**不落盘、不缓存**。
+9. **基础查询**:`getLeafId`/`getLeafEntry`/`getEntry`/`getChildren`/`getLabel`(:1087-1117)。`getChildren` 是"认父不认子"的反向查询——遍历 `byId.values()` 找 parentId 匹配,**不落盘、不缓存**。⚠️ 另缺 **`getSessionName`**(生产 `:1042`),须补。
 10. **`getBranch(fromId?)`**(:1152):从 leaf(或指定 id)沿 parentId 上溯到根,`reverse` 成 root-first,含全部类型。**验证**:建两分支树,`getBranch("e9")` 返回 [e1,e2,e6,e7,e8,e9],不含被弃分支。
 11. **`getTree()`**(:1194):把 `fileEntries` 排成 `SessionTreeNode[]`,孤儿当根、children 按 timestamp 排序(迭代式,防深树爆栈)。**验证**:两分支 → 两个 root 子树,children 有序。
 12. **`buildSessionContext()` 方法**(:1168):一行委托纯函数(§五)。**验证**:与 Tier 1 纯函数结果一致。
@@ -530,11 +535,11 @@ e6 (assistant)
 
 生产 `constructor(agent-session.ts:334)` 要求 4 个协作者。教学仓:`SessionManager` ✅ 就绪(Tier 2/3);其余 **Phase-0 骨架已落盘**(方法名对齐生产,体为 TODO 桩):
 
-1. ✅ **`packages/agent/src/agent.ts` — `class Agent`**(从 `pi-agent-core` 导入):目前只有 `subscribe`/`prompt`(stub)/`continue`(stub)/`hasQueuedMessages`(stub)/`state.messages`/`model`/`streamFn`/`isStreaming`/`beforeToolCall`/`afterToolCall`;**生产完整接口面(AgentQueue、steer/followUp 队列、waitForIdle/signal/abort/reset、runPromptMessages/runContinuation/runWithLifecycle)待 Phase 2 加桩 + 实装**(4.4 管线给出对接点)。
+1. ✅ **`packages/agent/src/agent.ts` — `class Agent`**(从 `pi-agent-core` 导入):目前只有 `subscribe`/`prompt`(stub)/`continue`(stub)/`hasQueuedMessages`(stub)/`state.messages`/`model`/`streamFn`/`isStreaming`/`beforeToolCall`/`afterToolCall`;**生产完整接口面(`PendingMessageQueue`、steer/followUp 队列、waitForIdle/signal/abort/reset、runPromptMessages/runContinuation/runWithLifecycle)待 Phase 2 加桩 + 实装**(4.4 管线给出对接点)。
 2. ✅ **`settings-manager.ts`**:`getCompactionSettings()`(默认 `DEFAULT_COMPACTION_SETTINGS`)/`getRetrySettings()`;写口留 TODO。
 3. ✅ **`model-registry.ts`**:`getApiKeyAndHeaders(model)`/`isUsingOAuth(model)`;env 取 key 留 TODO。
 
-跨包桩 ✅:`packages/ai/src/compat.ts`(`clampThinkingLevel`/`getSupportedThinkingLevels`/`isContextOverflow`/`modelsAreEqual`),级別用本地 `CompatThinkingLevel` 避免跨包耦合。`ResourceLoader`/`ExtensionRunner` 缺席 → `_emitExtensionEvent` 空、`_installAgentToolHooks` 空钩子。
+跨包依赖 ✅ 已对齐:原 `packages/ai/src/compat.ts` 桩(自造模块名 + 自造类型 `CompatThinkingLevel`)已删除,按生产拆到各自的家——`ai/src/types.ts` 新增 `ThinkingLevel`/`ModelThinkingLevel`/`ThinkingLevelMap`(生产 :74-76)+ `Model.thinkingLevelMap`;**`ai/src/models.ts` 新建**,落 `getSupportedThinkingLevels`/`clampThinkingLevel`/`modelsAreEqual`(生产 models.ts:399/410/435,model-aware 泛型签名);**`ai/src/utils/overflow.ts` 新建**,落 `isContextOverflow`(生产 :126)。测试 `packages/ai/test/models.test.ts` 8 例。`ResourceLoader`/`ExtensionRunner` 缺席 → `_emitExtensionEvent` 空、`_installAgentToolHooks` 空钩子。
 
 #### 4.3 逐 Phase 实施细节(每步:目标 / 要实现的代码逻辑 / 验证)
 
@@ -546,13 +551,13 @@ e6 (assistant)
 **Phase 2 — 每轮闭环「能跑」(⏳,核心缺口)**
 - 目标:Agent.prompt 真接 `runAgentLoop`,`sendUserMessage("...")` 能跑完整一轮;树、事件、状态三方同步。
 - 要实现的代码逻辑(全部在 `packages/agent/src/agent.ts`,方法名照生产 `packages/agent/src/agent.ts:166-557`):
-  1. **`AgentQueue`**(生产 :117-164):`enqueue`/`hasItems`/`drain`/`clear` → 字段 `steeringQueue`/`followUpQueue`;
+  1. **`PendingMessageQueue`**(生产 `agent.ts:118-153`):字段 `public mode: QueueMode` + `constructor(mode)` + `enqueue`/`hasItems`/`drain`/`clear`——**`drain()` 是模式感知的**(`"all"` 全取;`"one-at-a-time"` 只取最旧一条,其余留队);`Agent` 上建 `steeringQueue`/`followUpQueue` 两个实例,mode 取自 `AgentOptions.steeringMode`/`followUpMode`(:110-111);
   2. **`steer`/`followUp`/`clear{Steering,FollowUp,All}Queues`/`hasQueuedMessages`**(:264-292)——置入选区/排队,`hasQueuedMessages` 供 `_handlePostAgentRun` 判断续跑;
   3. **`prompt`**(:325):guard `activeRun` → `normalizePromptInput`(:367)→ `runPromptMessages`;
   4. **`continue`**(:338):guard → 末条 assistant 时先 drain steering→followUp 各跑一轮,否则 `runContinuation`;
-  5. **`runPromptMessages`**(:386)/**`runContinuation`**(:402):`runWithLifecycle(() => runAgentLoop(messages, createContextSnapshot(), createLoopConfig(), e⇒processEvents(e,signal), signal, streamFn))`;`newMessages` 并入 `state.messages`(教学 `runContinuation` = `runAgentLoop([], …)` 空 prompts 续出 assistant);
+  5. **`runPromptMessages`**(:386)/**`runContinuation`**(:402):`runWithLifecycle(() => runAgentLoop(messages, createContextSnapshot(), createLoopConfig(), e⇒processEvents(e,signal), signal, streamFn))`;`newMessages` 并入 `state.messages`。⚠️ `runContinuation` 须调生产 **`runAgentLoopContinue`**(`agent-loop.ts:120`,`(context, config, emit, signal?, streamFn?)`;守卫:无消息/末条 assistant → throw)——教学 `agent-loop.ts` 现只导出 `agentLoop`/`runAgentLoop`,**须补该同名函数**(不得用自造等价);
   6. **`createContextSnapshot`**(:414):`systemPrompt + messages.slice() + tools.slice()`(快照副本,防 loop 在已合并数组上追加);
-  7. **`createLoopConfig`**(:422 教学映射):`model/convertToLlm/beforeToolCall/afterToolCall/` **`getQueuedMessages`** = drain 两队列(生产是 `getSteeringMessages`/`getFollowUpMessages` 两口,教学 AgentLoopConfig 只有 `getQueuedMessages`,合并之;`skipInitialSteeringPoll` 走入口分支);
+  7. **`createLoopConfig`**(:422):`model/convertToLlm/beforeToolCall/afterToolCall`,并装配队列两口 **`getSteeringMessages`/`getFollowUpMessages`**(生产 `agent.ts:440/447`),`skipInitialSteeringPoll` 走入口分支。⚠️ **`AgentLoopConfig` 队列字段须对齐生产改名**——教学现为自造的单口 `getQueuedMessages`(`packages/agent/src/types.ts:145`;用点 `agent-loop.ts:131/202`、`agent.ts:25/77`),须替换为 **`getSteeringMessages` + `getFollowUpMessages`**(`agent/src/types.ts:235/248`);
   8. **`runWithLifecycle`**(:451):guard activeRun、建 AbortController+promise、置 `isStreaming`,executor 跑 loop,finally `finishRun`;
   9. **`handleRunFailure`**(:476):loop 抛错时补 error/aborted assistant 消息并广播三角色事件;`finishRun`(:494)清流式态并 resolve;
   10. **`signal`/`abort`/`waitForIdle`**(:294-311)/**`reset`**(:314);`processEvents` await 每个 listener(`(event, signal)`)。
@@ -561,7 +566,7 @@ e6 (assistant)
 
 **Phase 3 — 压缩「能压」(⏳,骨架已大半)**
 - 目标:agent_end 后自动压;手动 `compact` 等效。
-- 代码逻辑:`_checkCompaction(:1816,threshold 路径骨架已写)`——**待补**:`getLatestCompactionEntry`(生产 session-manager.ts:311,防"刚压完被旧 usage 顶起"的边界)先落进 `session-manager.ts`;`_runAutoCompaction(:1910 已写,:1736-1739 三行生效)`、`compact(:1652 手动已写)`、`setAutoCompactionEnabled`/`abortCompaction`/`isCompacting`/`getContextUsage` 桩;`_getCompactionRequestAuth` 走 ModelRegistry 桩。`isContextOverflow`(overflow 路径)留到 compat 桩实装后再接。
+- 代码逻辑:`_checkCompaction(:1816)` **overflow + threshold 两条路径均已落地**——`getLatestCompactionEntry`(生产 session-manager.ts:311,防"刚压完被旧 usage 顶起"的边界)已落进 `session-manager.ts`;Case 1 overflow 走 `sameModel` + `isContextOverflow` + `_overflowRecoveryAttempted` 单次"压缩+重试"守卫(生产 :1823-1874);`_runAutoCompaction(:1910 已写,:1736-1739 三行生效)`、`compact(:1652 手动已写)`、`setAutoCompactionEnabled`/`abortCompaction`/`isCompacting`/`getContextUsage` 桩;`_getCompactionRequestAuth` 走 ModelRegistry 桩。
 - 验证(闭合 05 端到端):塞超阈值上下文 → `agent_end` → 自动压 → 下一轮 `convertToLlm` 第一条是 `<summary>` user、树出现 compaction entry;`compact()` 手动等效。
 
 **Phase 4 — 跨轮恢复「能恢复」(⏳,桩)**

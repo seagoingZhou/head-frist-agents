@@ -16,6 +16,14 @@ import type {
 } from "pi-ai";
 
 /**
+ * 控制 agent loop 到达"队列排放点"时,一次注入多少条排队的用户消息。
+ *
+ * - "all":到点就把队列里所有排队消息全部取走注入。
+ * - "one-at-a-time":只取走最旧的一条,其余留到后续排放点再注入。
+ */
+export type QueueMode = "all" | "one-at-a-time";
+
+/**
    * 控制单条 assistant 消息内多个工具调用的执行方式。
    *
    * - "sequential"（串行）：每个工具调用先完成「预处理 → 执行 → 收尾」，再开始下一个。
@@ -59,6 +67,39 @@ export interface CustomAgentMessages {
  */
 export type AgentMessage = Message | CustomAgentMessages[keyof CustomAgentMessages];
 
+/**
+ * Agent 的公开状态(生产 agent/types.ts:322)。Agent 类把这些字段暴露给外部读/改:
+ * 系统提示、模型、思考级别、工具与对话转录,以及运行期只读标志(是否流式中等)。
+ *
+ * `tools` / `messages` 用访问器属性(getter + setter):赋值时实现会**复制顶层数组**再存储,
+ * 避免外部持有并继续改动的同一数组直接穿透进内部状态。
+ */
+export interface AgentState {
+	/** 每次模型请求随带的系统提示词。 */
+	systemPrompt: string;
+	/** 后续轮次使用的当前模型。 */
+	model: Model<any>;
+	/** 后续轮次请求的思考/推理级别。 */
+	thinkingLevel: ThinkingLevel;
+	/** 可用工具。赋值时复制顶层数组。 */
+	set tools(tools: AgentTool[]);
+	get tools(): AgentTool[];
+	/** 对话转录。赋值时复制顶层数组。 */
+	set messages(messages: AgentMessage[]);
+	get messages(): AgentMessage[];
+	/**
+	 * agent 正在处理一个 prompt / continuation 期间为 true。
+	 * 会一直保持 true,直到被 await 的 `agent_end` 监听器全部 settle。
+	 */
+	readonly isStreaming: boolean;
+	/** 当前流式响应的部分 assistant 消息(若有)。 */
+	readonly streamingMessage?: AgentMessage;
+	/** 当前正在执行的工具调用 id 集合。 */
+	readonly pendingToolCalls: ReadonlySet<string>;
+	/** 最近一次失败或被中止的 assistant 回合的错误信息(若有)。 */
+	readonly errorMessage?: string;
+}
+
 export interface AgentToolResult {
     content : (TextContent)[];
     details: any;
@@ -89,19 +130,34 @@ export interface AgentContext {
 	tools?: AgentTool[];
 }
 
+/** 传给 `shouldStopAfterTurn` 的上下文。 */
+export interface ShouldStopAfterTurnContext {
+	/** 完成本回合的那条 assistant 消息。 */
+	message: AssistantMessage;
+	/** 传给前面 `turn_end` 事件的工具结果消息。 */
+	toolResults: ToolResultMessage[];
+	/** 本回合的 assistant 消息与工具结果都已追加后的当前 agent 上下文。 */
+	context: AgentContext;
+	/** 本次 loop 调用此刻退出时将返回的消息。prompt 运行含最初的 prompt 消息;continuation 运行不含已有上下文消息。 */
+	newMessages: AgentMessage[];
+}
+
+/** agent loop 在发起下一次 provider 请求前使用的替换运行时状态。 */
+export interface AgentLoopTurnUpdate {
+	/** 下一次 provider 请求的上下文。 */
+	context?: AgentContext;
+	/** 下一次 provider 请求的模型。 */
+	model?: Model<any>;
+	/** 下一次 provider 请求的思考级别。 */
+	thinkingLevel?: ThinkingLevel;
+}
+
+export interface PrepareNextTurnContext extends ShouldStopAfterTurnContext {}
 
 export interface AgentLoopConfig extends SimpleStreamOptions{
 
     model: Model<any>;
 
-
-    /**
-	 * 返回要注入对话的排队消息。
-	 *
-	 * 每轮结束后调用，检查用户打断或注入的消息。
-	 * 若有返回，则在下一次 LLM 调用前加入上下文。
-	 */
-	getQueuedMessages?: () => Promise<AgentMessage[]>;
 
     /**
 	 * 每次 LLM 调用前，把 AgentMessage[] 转成 LLM 兼容的 Message[]。
@@ -151,6 +207,61 @@ export interface AgentLoopConfig extends SimpleStreamOptions{
 	 */
 	transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>;
 
+	/**
+	 * 每次 LLM 调用时动态解析 API key。
+	 *
+	 * 适用于短时效的 OAuth token(如 GitHub Copilot)——它们可能在长时间工具执行阶段里过期。
+	 *
+	 * 契约:不得 throw 或 reject;取不到 key 时返回 undefined。
+	 */
+	getApiKey?: (provider: string) => Promise<string | undefined> | string | undefined;
+
+	/**
+	 * Called after each turn fully completes and `turn_end` has been emitted.
+	 *
+	 * If it returns true, the loop emits `agent_end` and exits before polling steering or follow-up queues,
+	 * without starting another LLM call. The current assistant response and any tool executions finish normally.
+	 *
+	 * Use this to request a graceful stop after the current turn, e.g. before context gets too full.
+	 *
+	 * Contract: must not throw or reject. Throwing interrupts the low-level agent loop without producing a normal event sequence.
+	 */
+	shouldStopAfterTurn?: (context: ShouldStopAfterTurnContext) => boolean | Promise<boolean>;
+
+	/**
+	 * 在 `turn_end` 之后、loop 决定是否再发起一次 provider 请求之前调用。
+	 * 返回替换用的 context/model/thinking 状态,以影响本次运行的下一个回合。
+	 * 返回 undefined 表示继续沿用当前 context/config。
+	 */
+	prepareNextTurn?: (
+		context: PrepareNextTurnContext,
+	) => AgentLoopTurnUpdate | undefined | Promise<AgentLoopTurnUpdate | undefined>;
+
+	/**
+	 * 返回要在运行中间注入对话的 steering(打断引导)消息。
+	 *
+	 * 在当前 assistant 回合执行完其工具调用后调用(除非 `shouldStopAfterTurn` 先退出)。
+	 * 若返回了消息,会在下一次 LLM 调用前加入上下文;
+	 * 当前 assistant 消息里的工具调用不会被跳过。
+	 *
+	 * 用于在 agent 干活过程中"引导"它。
+	 *
+	 * 契约:不得 throw 或 reject;没有 steering 消息时返回 []。
+	 */
+	getSteeringMessages?: () => Promise<AgentMessage[]>;
+
+	/**
+	 * 返回在 agent 本将停止之后要处理的 follow-up(后续)消息。
+	 *
+	 * 当 agent 已无更多工具调用、也无 steering 消息时调用。
+	 * 若返回了消息,会加入上下文,agent 继续下一个回合。
+	 *
+	 * 用于"等 agent 干完再处理"的后续消息。
+	 *
+	 * 契约:不得 throw 或 reject;没有 follow-up 消息时返回 []。
+	 */
+	getFollowUpMessages?: () => Promise<AgentMessage[]>;
+
     /**
 	 * 工具执行模式。
 	 * - "sequential"（串行）：每个工具调用先完成「预处理 → 执行 → 收尾」，再开始下一个
@@ -188,9 +299,9 @@ export interface AgentLoopConfig extends SimpleStreamOptions{
 }
 
 /**
- * Thinking/reasoning level for models that support it.
- * Note: "xhigh" is only supported by selected model families. Use model thinking-level metadata
- * from @earendil-works/pi-ai to detect support for a concrete model.
+ * 思考/推理级别(适用于支持该能力的模型)。
+ * 注意:"xhigh" 只有部分模型家族支持——要判断某个具体模型是否支持,需读
+ * `@earendil-works/pi-ai` 里的 model thinking-level 元数据。
  */
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 

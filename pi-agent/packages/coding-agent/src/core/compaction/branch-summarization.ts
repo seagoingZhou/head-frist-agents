@@ -2,7 +2,7 @@
  * 分支摘要:切到会话树另一分支时,给"被放弃的旧分支"生成摘要,避免上下文丢失。
  * (collectEntriesForBranchSummary 找 LCA → prepareBranchEntries 收消息 → generateBranchSummary 出摘要)
  */
-import type { SessionEntry } from "../session-manager.ts";
+import type { ReadonlySessionManager, SessionEntry } from "../session-manager.ts";
 import type { AgentMessage, StreamFn } from "pi-agent-core";
 import type { Model, SimpleStreamOptions } from "pi-ai";
 import  { completeSimple } from "pi-ai";
@@ -89,21 +89,9 @@ export interface GenerateBranchSummaryOptions {
 /**
  * 分支摘要:用户切到会话树的另一个分支时,给"被放弃的旧分支"生成摘要。
  *
- * 与生产 `branch-summarization.ts` 同签名/算法。当前离线仓没有会话层(SessionManager)下的
- * `getBranch`/`getEntry` 方法,故先把最小会话视图 `ReadonlySessionManager` 定义在此、
- * LCA 纯函数落地;等会话树就位后,直接把真实的 SessionManager 传进来即可(它满足该接口)。
+ * 与生产 `branch-summarization.ts` 同签名/算法。会话视图用 `ReadonlySessionManager`
+ * (在本文件只读,不依赖会话层的写方法),真实 SessionManager 直接满足该类型。
  */
-
-/**
- * 最小会话视图 —— 只暴露 collectEntriesForBranchSummary 需要的两个只读方法。
- * 生产 `ReadonlySessionManager` 能力更多;教学版先取子集,会话树齐了再对齐全接口。
- */
-export interface ReadonlySessionManager {
-	/** 从 root 到指定叶子(含)的路径,root-first */
-	getBranch(id: string | null): SessionEntry[];
-	/** 按 id 取单条 entry */
-	getEntry(id: string): SessionEntry | undefined;
-}
 
 /** 收集结果:被放弃分支的 entries(时间序)+ 两条路径的最近公共祖先。 */
 export interface CollectEntriesResult {
